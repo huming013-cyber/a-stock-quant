@@ -8,21 +8,25 @@ import os
 # =========================================================
 
 st.set_page_config(
-    page_title="A股量化选股助手 V3.0",
+    page_title="A股量化选股助手 V3.1",
     page_icon="📈",
     layout="wide"
 )
 
 st.title("📈 A股量化选股助手")
-st.caption("V3.0 · 综合评分 0-100 · 自动排名 · Top 10")
+st.caption("V3.1 · 中文名称 · 综合评分 0-100 · 自动排名 · Top 10")
 
 
 # =========================================================
-# 股票列表
+# 股票列表文件
 # =========================================================
 
 STOCK_LIST_FILE = "stock_list.csv"
 
+
+# =========================================================
+# 读取股票列表 + 中文名称
+# =========================================================
 
 @st.cache_data
 def load_stock_list():
@@ -39,26 +43,56 @@ def load_stock_list():
         encoding="utf-8-sig"
     )
 
+    # 检查 code
+
     if "code" not in df.columns:
 
         raise ValueError(
             "stock_list.csv 中没有找到 code 列"
         )
 
-    stocks = (
+    # 检查 name
+
+    if "name" not in df.columns:
+
+        raise ValueError(
+            "stock_list.csv 中没有找到 name 列"
+        )
+
+    # 股票代码统一为6位
+
+    df["code"] = (
         df["code"]
-        .dropna()
         .astype(str)
         .str.strip()
         .str.zfill(6)
-        .tolist()
     )
 
-    return stocks
+    # 股票名称
+
+    df["name"] = (
+        df["name"]
+        .fillna("未知股票")
+        .astype(str)
+        .str.strip()
+    )
+
+    # 删除重复股票
+
+    df = df.drop_duplicates(
+        subset=["code"]
+    )
+
+    return df[
+        [
+            "code",
+            "name"
+        ]
+    ]
 
 
 # =========================================================
-# 读取行情
+# 读取行情数据
 # =========================================================
 
 @st.cache_data
@@ -85,25 +119,28 @@ def load_stock_data(code):
 
         return None
 
-    required_columns = [
-        "日期",
-        "收盘"
-    ]
+    # 必须有日期和收盘
 
-    for column in required_columns:
+    if "日期" not in df.columns:
 
-        if column not in df.columns:
+        return None
 
-            return None
+    if "收盘" not in df.columns:
 
+        return None
+
+    # =====================================================
     # 日期
+    # =====================================================
 
     df["日期"] = pd.to_datetime(
         df["日期"],
         errors="coerce"
     )
 
+    # =====================================================
     # 数值
+    # =====================================================
 
     number_columns = [
         "开盘",
@@ -122,12 +159,16 @@ def load_stock_data(code):
                 errors="coerce"
             )
 
+    # 删除无效数据
+
     df = df.dropna(
         subset=[
             "日期",
             "收盘"
         ]
     )
+
+    # 按日期排序
 
     df = df.sort_values(
         "日期"
@@ -136,6 +177,8 @@ def load_stock_data(code):
     df = df.reset_index(
         drop=True
     )
+
+    # 至少需要30个交易日
 
     if len(df) < 30:
 
@@ -260,7 +303,7 @@ def load_stock_data(code):
     )
 
     # =====================================================
-    # 波动率
+    # 20日波动率
     # =====================================================
 
     df["VOLATILITY20"] = (
@@ -273,7 +316,55 @@ def load_stock_data(code):
 
 
 # =========================================================
-# 单只股票评分
+# 读取股票池
+# =========================================================
+
+try:
+
+    STOCK_LIST = load_stock_list()
+
+except Exception as e:
+
+    st.error(
+        "股票列表读取失败"
+    )
+
+    st.code(
+        str(e)
+    )
+
+    st.stop()
+
+
+# 股票代码
+
+STOCKS = (
+    STOCK_LIST["code"]
+    .tolist()
+)
+
+
+# 股票名称字典
+
+STOCK_NAMES = dict(
+    zip(
+        STOCK_LIST["code"],
+        STOCK_LIST["name"]
+    )
+)
+
+
+# =========================================================
+# 股票数量
+# =========================================================
+
+st.info(
+    f"📋 当前股票池：{len(STOCKS)} 只股票"
+)
+
+
+# =========================================================
+# 单只股票量化
 # =========================================================
 
 def analyze_stock(code):
@@ -314,17 +405,11 @@ def analyze_stock(code):
 
 
     # =====================================================
-    # 评分
+    # 1. 趋势评分 30分
     # =====================================================
 
-    score = 0
-
-
-    # -----------------------------------------------------
-    # 1. 趋势评分 30分
-    # -----------------------------------------------------
-
     trend_score = 0
+
 
     if pd.notna(ma5) and pd.notna(ma20):
 
@@ -332,11 +417,13 @@ def analyze_stock(code):
 
             trend_score += 10
 
+
     if pd.notna(ma10) and pd.notna(ma20):
 
         if ma10 > ma20:
 
             trend_score += 10
+
 
     if pd.notna(price) and pd.notna(ma60):
 
@@ -345,11 +432,12 @@ def analyze_stock(code):
             trend_score += 10
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 2. MACD评分 25分
-    # -----------------------------------------------------
+    # =====================================================
 
     macd_score = 0
+
 
     if pd.notna(dif) and pd.notna(dea):
 
@@ -362,30 +450,36 @@ def analyze_stock(code):
             macd_score += 10
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 3. 成交量评分 15分
-    # -----------------------------------------------------
+    # =====================================================
 
     volume_score = 0
 
-    if pd.notna(volume) and pd.notna(volume20):
+
+    if (
+        pd.notna(volume)
+        and pd.notna(volume20)
+    ):
 
         if volume > volume20:
 
             volume_score += 15
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 4. 动量评分 20分
-    # -----------------------------------------------------
+    # =====================================================
 
     momentum_score = 0
+
 
     if pd.notna(return5):
 
         if return5 > 0:
 
             momentum_score += 10
+
 
     if pd.notna(return20):
 
@@ -394,11 +488,12 @@ def analyze_stock(code):
             momentum_score += 10
 
 
-    # -----------------------------------------------------
+    # =====================================================
     # 5. 稳定性评分 10分
-    # -----------------------------------------------------
+    # =====================================================
 
     stability_score = 0
+
 
     if pd.notna(volatility):
 
@@ -453,7 +548,16 @@ def analyze_stock(code):
         signal = "🔴 偏弱"
 
 
+    # =====================================================
+    # 返回结果
+    # =====================================================
+
     return {
+
+        "股票名称": STOCK_NAMES.get(
+            code,
+            "未知股票"
+        ),
 
         "代码": code,
 
@@ -495,32 +599,6 @@ def analyze_stock(code):
 
 
 # =========================================================
-# 读取股票池
-# =========================================================
-
-try:
-
-    STOCKS = load_stock_list()
-
-except Exception as e:
-
-    st.error(
-        "股票列表读取失败"
-    )
-
-    st.code(
-        str(e)
-    )
-
-    st.stop()
-
-
-st.info(
-    f"📋 当前股票池：{len(STOCKS)} 只股票"
-)
-
-
-# =========================================================
 # 一键量化
 # =========================================================
 
@@ -549,25 +627,36 @@ if st.button(
     for i, code in enumerate(STOCKS):
 
         status.write(
-            f"正在量化：{code} "
+            f"正在量化："
+            f"{STOCK_NAMES.get(code, '未知股票')} "
+            f"({code}) "
             f"（{i + 1} / {total}）"
         )
 
+
         try:
 
-            result = analyze_stock(code)
+            result = analyze_stock(
+                code
+            )
 
             if result is not None:
 
-                results.append(result)
+                results.append(
+                    result
+                )
 
             else:
 
-                failed.append(code)
+                failed.append(
+                    code
+                )
 
         except Exception:
 
-            failed.append(code)
+            failed.append(
+                code
+            )
 
 
         progress.progress(
@@ -581,7 +670,7 @@ if st.button(
 
 
     # =====================================================
-    # 结果
+    # 有结果
     # =====================================================
 
     if results:
@@ -591,7 +680,7 @@ if st.button(
         )
 
 
-        # 按综合评分排序
+        # 按综合评分 + 20日涨幅排序
 
         result_df = result_df.sort_values(
             by=[
@@ -640,6 +729,7 @@ if st.button(
             top10[
                 [
                     "排名",
+                    "股票名称",
                     "代码",
                     "日期",
                     "收盘价",
@@ -659,7 +749,7 @@ if st.button(
 
 
         # =================================================
-        # Top 10卡片
+        # Top 10 简洁展示
         # =================================================
 
         st.subheader(
@@ -671,8 +761,9 @@ if st.button(
 
             st.write(
                 f"**#{int(row['排名'])} "
-                f"{row['代码']}** · "
-                f"评分 **{row['综合评分']:.0f}** · "
+                f"{row['股票名称']} "
+                f"({row['代码']})** · "
+                f"综合评分 **{row['综合评分']:.0f}** · "
                 f"{row['信号']}"
             )
 
@@ -690,6 +781,7 @@ if st.button(
             result_df[
                 [
                     "排名",
+                    "股票名称",
                     "代码",
                     "日期",
                     "收盘价",
@@ -767,12 +859,10 @@ if st.button(
 
 
         # =================================================
-        # 下载
+        # 下载结果
         # =================================================
 
-        download_df = result_df.copy()
-
-        csv = download_df.to_csv(
+        csv = result_df.to_csv(
             index=False,
             encoding="utf-8-sig"
         )
@@ -781,14 +871,14 @@ if st.button(
         st.download_button(
             "⬇️ 下载完整量化结果",
             data=csv,
-            file_name="quant_result_v3.csv",
+            file_name="quant_result_v3_1.csv",
             mime="text/csv",
             use_container_width=True
         )
 
 
         # =================================================
-        # 失败股票
+        # 无行情数据
         # =================================================
 
         if failed:
@@ -809,12 +899,12 @@ if st.button(
         )
 
         st.info(
-            "请检查 data/ 文件夹中的行情 CSV。"
+            "请检查 GitHub 的 data/ 文件夹中是否存在行情 CSV。"
         )
 
 
 # =========================================================
-# 单股详细分析
+# 单只股票详细分析
 # =========================================================
 
 st.divider()
@@ -863,8 +953,15 @@ if st.button(
     latest = df.iloc[-1]
 
 
+    stock_name = STOCK_NAMES.get(
+        stock_code,
+        "未知股票"
+    )
+
+
     st.success(
-        f"{stock_code} · "
+        f"{stock_name} "
+        f"({stock_code}) · "
         f"数据日期："
         f"{latest['日期'].strftime('%Y-%m-%d')}"
     )
@@ -903,7 +1000,7 @@ if st.button(
 
 
     # =====================================================
-    # 趋势
+    # 均线趋势
     # =====================================================
 
     st.subheader(
@@ -1030,7 +1127,7 @@ if st.button(
 
 
     # =====================================================
-    # 趋势图
+    # 收盘价 + 均线
     # =====================================================
 
     st.subheader(
@@ -1058,7 +1155,7 @@ if st.button(
 
 
     # =====================================================
-    # MACD图
+    # MACD走势
     # =====================================================
 
     st.subheader(
