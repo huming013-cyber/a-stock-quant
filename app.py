@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import os
 
 
@@ -8,13 +9,15 @@ import os
 # =========================================================
 
 st.set_page_config(
-    page_title="A股量化选股助手 V4.0",
+    page_title="A股量化选股助手 V5.0",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 A股量化选股助手")
-st.caption("V4.0 · 网页股票池管理 · 中文名称 · 综合评分 0-100")
+st.title("📈 A股量化选股助手 V5.0")
+st.caption(
+    "多因子模型 · 趋势 + 动量 + MACD + 成交量 + 突破 + 风险控制"
+)
 
 
 # =========================================================
@@ -117,7 +120,7 @@ def save_stock_list(df):
 
 
 # =========================================================
-# 初始化 Session
+# 初始化股票池
 # =========================================================
 
 if "stock_pool" not in st.session_state:
@@ -131,14 +134,11 @@ if "stock_pool" not in st.session_state:
 # 股票池管理
 # =========================================================
 
-st.subheader(
-    "📋 股票池管理"
-)
+st.subheader("📋 股票池管理")
 
 st.write(
-    "在这里直接修改股票代码和名称，然后点击保存。"
+    "可以直接在这里修改股票代码和中文名称。"
 )
-
 
 edited_pool = st.data_editor(
     st.session_state.stock_pool,
@@ -146,14 +146,15 @@ edited_pool = st.data_editor(
     use_container_width=True,
     hide_index=True,
     column_config={
+
         "code": st.column_config.TextColumn(
             "股票代码",
-            help="请输入6位股票代码",
-            max_chars=6
+            help="6位股票代码"
         ),
+
         "name": st.column_config.TextColumn(
             "股票名称",
-            help="请输入股票中文名称"
+            help="股票中文名称"
         )
     }
 )
@@ -170,8 +171,6 @@ with col1:
         use_container_width=True
     ):
 
-        # 清理数据
-
         edited_pool = edited_pool.copy()
 
         edited_pool["code"] = (
@@ -187,8 +186,6 @@ with col1:
             .astype(str)
             .str.strip()
         )
-
-        # 检查代码
 
         invalid = edited_pool[
             ~edited_pool["code"].str.match(
@@ -227,7 +224,7 @@ with col1:
 with col2:
 
     if st.button(
-        "🔄 重新读取股票池",
+        "🔄 重新读取",
         use_container_width=True
     ):
 
@@ -256,7 +253,7 @@ with col3:
 
 
 # =========================================================
-# 当前股票池
+# 股票池
 # =========================================================
 
 STOCK_LIST = st.session_state.stock_pool.copy()
@@ -273,14 +270,13 @@ STOCK_NAMES = dict(
     )
 )
 
-
 st.info(
     f"📊 当前股票池：{len(STOCKS)} 只股票"
 )
 
 
 # =========================================================
-# 行情数据
+# 读取行情
 # =========================================================
 
 @st.cache_data
@@ -307,20 +303,35 @@ def load_stock_data(code):
 
         return None
 
-    if "日期" not in df.columns:
+    # -----------------------------------------------------
+    # 检查字段
+    # -----------------------------------------------------
 
-        return None
+    required = [
+        "日期",
+        "收盘"
+    ]
 
-    if "收盘" not in df.columns:
+    for column in required:
 
-        return None
+        if column not in df.columns:
+
+            return None
+
+    # -----------------------------------------------------
+    # 日期
+    # -----------------------------------------------------
 
     df["日期"] = pd.to_datetime(
         df["日期"],
         errors="coerce"
     )
 
-    number_columns = [
+    # -----------------------------------------------------
+    # 数值
+    # -----------------------------------------------------
+
+    numeric_columns = [
         "开盘",
         "收盘",
         "最高",
@@ -328,7 +339,7 @@ def load_stock_data(code):
         "成交量"
     ]
 
-    for column in number_columns:
+    for column in numeric_columns:
 
         if column in df.columns:
 
@@ -336,6 +347,18 @@ def load_stock_data(code):
                 df[column],
                 errors="coerce"
             )
+
+    # -----------------------------------------------------
+    # 如果没有成交量
+    # -----------------------------------------------------
+
+    if "成交量" not in df.columns:
+
+        df["成交量"] = np.nan
+
+    # -----------------------------------------------------
+    # 清洗
+    # -----------------------------------------------------
 
     df = df.dropna(
         subset=[
@@ -348,11 +371,16 @@ def load_stock_data(code):
         "日期"
     )
 
+    df = df.drop_duplicates(
+        subset=["日期"],
+        keep="last"
+    )
+
     df = df.reset_index(
         drop=True
     )
 
-    if len(df) < 30:
+    if len(df) < 60:
 
         return None
 
@@ -395,6 +423,22 @@ def load_stock_data(code):
     )
 
     # =====================================================
+    # 均线斜率
+    # =====================================================
+
+    df["MA20_SLOPE"] = (
+        df["MA20"]
+        .pct_change(5)
+        * 100
+    )
+
+    df["MA60_SLOPE"] = (
+        df["MA60"]
+        .pct_change(10)
+        * 100
+    )
+
+    # =====================================================
     # MACD
     # =====================================================
 
@@ -434,28 +478,33 @@ def load_stock_data(code):
         - df["DEA"]
     ) * 2
 
+    # MACD柱变化
+
+    df["MACD_CHANGE"] = (
+        df["MACD"]
+        - df["MACD"].shift(1)
+    )
+
     # =====================================================
     # 成交量
     # =====================================================
 
-    if "成交量" in df.columns:
+    df["VOL5"] = (
+        df["成交量"]
+        .rolling(5)
+        .mean()
+    )
 
-        df["VOL5"] = (
-            df["成交量"]
-            .rolling(5)
-            .mean()
-        )
+    df["VOL20"] = (
+        df["成交量"]
+        .rolling(20)
+        .mean()
+    )
 
-        df["VOL20"] = (
-            df["成交量"]
-            .rolling(20)
-            .mean()
-        )
-
-    else:
-
-        df["VOL5"] = 0
-        df["VOL20"] = 0
+    df["VOL_RATIO"] = (
+        df["成交量"]
+        / df["VOL20"]
+    )
 
     # =====================================================
     # 动量
@@ -473,8 +522,37 @@ def load_stock_data(code):
         * 100
     )
 
+    df["RETURN60"] = (
+        df["收盘"]
+        .pct_change(60)
+        * 100
+    )
+
     # =====================================================
-    # 波动率
+    # 20日最高价
+    # =====================================================
+
+    df["HIGH20"] = (
+        df["收盘"]
+        .rolling(20)
+        .max()
+        .shift(1)
+    )
+
+    # =====================================================
+    # 距离20日高点
+    # =====================================================
+
+    df["DIST_HIGH20"] = (
+        (
+            df["收盘"]
+            / df["HIGH20"]
+        )
+        - 1
+    ) * 100
+
+    # =====================================================
+    # 20日波动率
     # =====================================================
 
     df["VOLATILITY20"] = (
@@ -483,11 +561,93 @@ def load_stock_data(code):
         .std()
     )
 
+    # =====================================================
+    # ATR近似
+    # =====================================================
+
+    if all(
+        column in df.columns
+        for column in [
+            "最高",
+            "最低"
+        ]
+    ):
+
+        previous_close = (
+            df["收盘"]
+            .shift(1)
+        )
+
+        tr1 = (
+            df["最高"]
+            - df["最低"]
+        )
+
+        tr2 = (
+            df["最高"]
+            - previous_close
+        ).abs()
+
+        tr3 = (
+            df["最低"]
+            - previous_close
+        ).abs()
+
+        true_range = pd.concat(
+            [
+                tr1,
+                tr2,
+                tr3
+            ],
+            axis=1
+        ).max(
+            axis=1
+        )
+
+        df["ATR14"] = (
+            true_range
+            .rolling(14)
+            .mean()
+        )
+
+        df["ATR_PERCENT"] = (
+            df["ATR14"]
+            / df["收盘"]
+            * 100
+        )
+
+    else:
+
+        df["ATR14"] = np.nan
+
+        df["ATR_PERCENT"] = np.nan
+
     return df
 
 
 # =========================================================
-# 单只股票评分
+# 安全取值
+# =========================================================
+
+def value(row, column, default=np.nan):
+
+    try:
+
+        result = row[column]
+
+        if pd.isna(result):
+
+            return default
+
+        return float(result)
+
+    except Exception:
+
+        return default
+
+
+# =========================================================
+# V5.0 多因子模型
 # =========================================================
 
 def analyze_stock(code):
@@ -500,138 +660,413 @@ def analyze_stock(code):
 
     latest = df.iloc[-1]
 
-    price = latest["收盘"]
-    change = latest["涨跌幅"]
+    price = value(
+        latest,
+        "收盘"
+    )
 
-    ma5 = latest["MA5"]
-    ma10 = latest["MA10"]
-    ma20 = latest["MA20"]
-    ma60 = latest["MA60"]
+    change = value(
+        latest,
+        "涨跌幅",
+        0
+    )
 
-    dif = latest["DIF"]
-    dea = latest["DEA"]
+    ma5 = value(
+        latest,
+        "MA5"
+    )
 
-    volume = latest["成交量"]
-    volume20 = latest["VOL20"]
+    ma20 = value(
+        latest,
+        "MA20"
+    )
 
-    return5 = latest["RETURN5"]
-    return20 = latest["RETURN20"]
+    ma60 = value(
+        latest,
+        "MA60"
+    )
 
-    volatility = latest["VOLATILITY20"]
+    ma20_slope = value(
+        latest,
+        "MA20_SLOPE"
+    )
+
+    ma60_slope = value(
+        latest,
+        "MA60_SLOPE"
+    )
+
+    dif = value(
+        latest,
+        "DIF"
+    )
+
+    dea = value(
+        latest,
+        "DEA"
+    )
+
+    macd = value(
+        latest,
+        "MACD"
+    )
+
+    macd_change = value(
+        latest,
+        "MACD_CHANGE"
+    )
+
+    volume = value(
+        latest,
+        "成交量"
+    )
+
+    volume20 = value(
+        latest,
+        "VOL20"
+    )
+
+    volume_ratio = value(
+        latest,
+        "VOL_RATIO"
+    )
+
+    return5 = value(
+        latest,
+        "RETURN5"
+    )
+
+    return20 = value(
+        latest,
+        "RETURN20"
+    )
+
+    return60 = value(
+        latest,
+        "RETURN60"
+    )
+
+    high20 = value(
+        latest,
+        "HIGH20"
+    )
+
+    dist_high20 = value(
+        latest,
+        "DIST_HIGH20"
+    )
+
+    volatility = value(
+        latest,
+        "VOLATILITY20"
+    )
+
+    atr_percent = value(
+        latest,
+        "ATR_PERCENT"
+    )
 
 
     # =====================================================
-    # 趋势 30分
+    # 1. 趋势因子 25分
     # =====================================================
 
-    trend_score = 0
-
-    if pd.notna(ma5) and pd.notna(ma20):
-
-        if ma5 > ma20:
-
-            trend_score += 10
-
-    if pd.notna(ma10) and pd.notna(ma20):
-
-        if ma10 > ma20:
-
-            trend_score += 10
-
-    if pd.notna(price) and pd.notna(ma60):
-
-        if price > ma60:
-
-            trend_score += 10
-
-
-    # =====================================================
-    # MACD 25分
-    # =====================================================
-
-    macd_score = 0
-
-    if pd.notna(dif) and pd.notna(dea):
-
-        if dif > dea:
-
-            macd_score += 15
-
-        if dif > 0:
-
-            macd_score += 10
-
-
-    # =====================================================
-    # 成交量 15分
-    # =====================================================
-
-    volume_score = 0
+    trend = 0
 
     if (
-        pd.notna(volume)
-        and pd.notna(volume20)
+        pd.notna(ma5)
+        and pd.notna(ma20)
+        and ma5 > ma20
     ):
 
-        if volume > volume20:
+        trend += 7
 
-            volume_score += 15
+    if (
+        pd.notna(ma20)
+        and pd.notna(ma60)
+        and ma20 > ma60
+    ):
+
+        trend += 7
+
+    if (
+        pd.notna(price)
+        and pd.notna(ma60)
+        and price > ma60
+    ):
+
+        trend += 5
+
+    if (
+        pd.notna(ma20_slope)
+        and ma20_slope > 0
+    ):
+
+        trend += 3
+
+    if (
+        pd.notna(ma60_slope)
+        and ma60_slope > 0
+    ):
+
+        trend += 3
 
 
     # =====================================================
-    # 动量 20分
+    # 2. 动量因子 20分
     # =====================================================
 
-    momentum_score = 0
+    momentum = 0
 
     if pd.notna(return5):
 
         if return5 > 0:
 
-            momentum_score += 10
+            momentum += 5
+
+        if return5 > 3:
+
+            momentum += 2
 
     if pd.notna(return20):
 
         if return20 > 0:
 
-            momentum_score += 10
+            momentum += 6
+
+        if return20 > 5:
+
+            momentum += 2
+
+    if pd.notna(return60):
+
+        if return60 > 0:
+
+            momentum += 5
+
+
+    momentum = min(
+        momentum,
+        20
+    )
 
 
     # =====================================================
-    # 稳定性 10分
+    # 3. MACD因子 15分
     # =====================================================
 
-    stability_score = 0
+    macd_score = 0
+
+    if (
+        pd.notna(dif)
+        and pd.notna(dea)
+    ):
+
+        if dif > dea:
+
+            macd_score += 7
+
+        if dif > 0:
+
+            macd_score += 5
+
+    if (
+        pd.notna(macd_change)
+        and macd_change > 0
+    ):
+
+        macd_score += 3
+
+
+    macd_score = min(
+        macd_score,
+        15
+    )
+
+
+    # =====================================================
+    # 4. 成交量因子 15分
+    # =====================================================
+
+    volume_score = 0
+
+    volume_available = (
+        pd.notna(volume)
+        and pd.notna(volume20)
+        and volume20 > 0
+    )
+
+    if volume_available:
+
+        if volume_ratio > 1.0:
+
+            volume_score += 5
+
+        if volume_ratio >= 1.2:
+
+            volume_score += 5
+
+        if (
+            change > 0
+            and volume_ratio >= 1.2
+        ):
+
+            volume_score += 5
+
+    else:
+
+        # 没有成交量数据时，
+        # 不奖励，也不惩罚
+
+        volume_score = 0
+
+
+    volume_score = min(
+        volume_score,
+        15
+    )
+
+
+    # =====================================================
+    # 5. 突破因子 15分
+    # =====================================================
+
+    breakout = 0
+
+    if (
+        pd.notna(price)
+        and pd.notna(high20)
+        and high20 > 0
+    ):
+
+        ratio = (
+            price / high20
+        )
+
+        if ratio >= 1.0:
+
+            breakout += 10
+
+        elif ratio >= 0.97:
+
+            breakout += 6
+
+        elif ratio >= 0.93:
+
+            breakout += 3
+
+
+    # 突破同时放量
+
+    if (
+        breakout >= 10
+        and volume_available
+        and volume_ratio >= 1.2
+    ):
+
+        breakout += 5
+
+
+    breakout = min(
+        breakout,
+        15
+    )
+
+
+    # =====================================================
+    # 6. 风险因子
+    #
+    # 风险不是简单加分，而是从总分中扣除
+    # =====================================================
+
+    risk_penalty = 0
+
+
+    # 波动率过高
 
     if pd.notna(volatility):
 
-        if volatility < 3:
+        if volatility > 8:
 
-            stability_score = 10
+            risk_penalty += 8
 
-        elif volatility < 5:
+        elif volatility > 6:
 
-            stability_score = 7
+            risk_penalty += 5
 
-        elif volatility < 8:
+        elif volatility > 4:
 
-            stability_score = 4
+            risk_penalty += 2
 
-        else:
 
-            stability_score = 1
+    # ATR过高
+
+    if pd.notna(atr_percent):
+
+        if atr_percent > 7:
+
+            risk_penalty += 5
+
+        elif atr_percent > 5:
+
+            risk_penalty += 3
+
+
+    # 短期涨幅过大，防止追高
+
+    if pd.notna(return5):
+
+        if return5 > 15:
+
+            risk_penalty += 6
+
+        elif return5 > 10:
+
+            risk_penalty += 4
+
+        elif return5 > 7:
+
+            risk_penalty += 2
+
+
+    # 距离20日高点过远
+
+    if pd.notna(dist_high20):
+
+        if dist_high20 < -15:
+
+            risk_penalty += 5
+
+        elif dist_high20 < -10:
+
+            risk_penalty += 3
+
+
+    risk_penalty = min(
+        risk_penalty,
+        20
+    )
 
 
     # =====================================================
-    # 综合评分
+    # 最终评分
     # =====================================================
 
-    score = (
-        trend_score
+    raw_score = (
+        trend
+        + momentum
         + macd_score
         + volume_score
-        + momentum_score
-        + stability_score
+        + breakout
+    )
+
+    score = max(
+        0,
+        min(
+            100,
+            raw_score
+            - risk_penalty
+        )
     )
 
 
@@ -639,21 +1074,50 @@ def analyze_stock(code):
     # 信号
     # =====================================================
 
-    if score >= 80:
+    if score >= 85:
 
         signal = "🟢 强势"
 
-    elif score >= 65:
+    elif score >= 75:
 
-        signal = "🟡 偏强"
+        signal = "🟢 偏强"
 
-    elif score >= 50:
+    elif score >= 60:
 
-        signal = "🟠 观察"
+        signal = "🟡 观察"
+
+    elif score >= 45:
+
+        signal = "🟠 偏弱"
 
     else:
 
-        signal = "🔴 偏弱"
+        signal = "🔴 弱势"
+
+
+    # =====================================================
+    # 综合判断
+    # =====================================================
+
+    if (
+        score >= 75
+        and trend >= 18
+        and macd_score >= 10
+    ):
+
+        quality = "⭐⭐⭐⭐ 高质量"
+
+    elif score >= 65:
+
+        quality = "⭐⭐⭐ 中高质量"
+
+    elif score >= 50:
+
+        quality = "⭐⭐ 一般"
+
+    else:
+
+        quality = "⭐ 较弱"
 
 
     return {
@@ -671,33 +1135,47 @@ def analyze_stock(code):
 
         "涨跌幅": change,
 
-        "趋势": trend_score,
+        "趋势": trend,
+
+        "动量": momentum,
 
         "MACD": macd_score,
 
         "成交量": volume_score,
 
-        "动量": momentum_score,
+        "突破": breakout,
 
-        "稳定性": stability_score,
+        "风险扣分": risk_penalty,
 
         "综合评分": score,
 
+        "质量": quality,
+
         "信号": signal,
-
-        "MA5": ma5,
-
-        "MA20": ma20,
-
-        "DIF": dif,
-
-        "DEA": dea,
 
         "5日涨幅": return5,
 
         "20日涨幅": return20,
 
-        "波动率": volatility
+        "60日涨幅": return60,
+
+        "成交量比": volume_ratio,
+
+        "20日波动率": volatility,
+
+        "距离20日高点": dist_high20,
+
+        "MA5": ma5,
+
+        "MA20": ma20,
+
+        "MA60": ma60,
+
+        "DIF": dif,
+
+        "DEA": dea,
+
+        "MACD柱": macd
 
     }
 
@@ -709,7 +1187,12 @@ def analyze_stock(code):
 st.divider()
 
 st.subheader(
-    "🚀 一键量化"
+    "🚀 V5.0 多因子一键量化"
+)
+
+st.write(
+    "模型：趋势 25% + 动量 20% + MACD 15% + "
+    "成交量 15% + 突破 15% − 风险扣分"
 )
 
 
@@ -742,12 +1225,11 @@ if st.button(
     for i, code in enumerate(STOCKS):
 
         status.write(
-            f"正在分析："
+            f"正在量化："
             f"{STOCK_NAMES.get(code, '未知股票')} "
             f"({code}) "
             f"— {i + 1}/{total}"
         )
-
 
         try:
 
@@ -773,19 +1255,18 @@ if st.button(
                 code
             )
 
-
         progress.progress(
             (i + 1) / total
         )
 
 
     status.success(
-        "🎉 一键量化完成！"
+        "🎉 V5.0 量化完成！"
     )
 
 
     # =====================================================
-    # 量化结果
+    # 结果
     # =====================================================
 
     if results:
@@ -827,7 +1308,7 @@ if st.button(
         # =================================================
 
         st.subheader(
-            "🏆 今日量化 Top 10"
+            "🏆 V5.0 量化 Top 10"
         )
 
 
@@ -843,18 +1324,41 @@ if st.button(
                     "日期",
                     "收盘价",
                     "涨跌幅",
+                    "综合评分",
+                    "质量",
+                    "信号",
                     "趋势",
+                    "动量",
                     "MACD",
                     "成交量",
-                    "动量",
-                    "稳定性",
-                    "综合评分",
-                    "信号"
+                    "突破",
+                    "风险扣分"
                 ]
             ],
             use_container_width=True,
             hide_index=True
         )
+
+
+        # =================================================
+        # Top 10 快速查看
+        # =================================================
+
+        st.subheader(
+            "⭐ 强势股票"
+        )
+
+
+        for _, row in top10.iterrows():
+
+            st.write(
+                f"**#{int(row['排名'])} "
+                f"{row['股票名称']} "
+                f"({row['代码']})** · "
+                f"评分 **{row['综合评分']:.0f}** · "
+                f"{row['质量']} · "
+                f"{row['信号']}"
+            )
 
 
         # =================================================
@@ -875,13 +1379,21 @@ if st.button(
                     "日期",
                     "收盘价",
                     "涨跌幅",
+                    "综合评分",
+                    "质量",
+                    "信号",
                     "趋势",
+                    "动量",
                     "MACD",
                     "成交量",
-                    "动量",
-                    "稳定性",
-                    "综合评分",
-                    "信号"
+                    "突破",
+                    "风险扣分",
+                    "5日涨幅",
+                    "20日涨幅",
+                    "60日涨幅",
+                    "成交量比",
+                    "20日波动率",
+                    "距离20日高点"
                 ]
             ],
             use_container_width=True,
@@ -912,10 +1424,10 @@ if st.button(
         with col2:
 
             st.metric(
-                "≥80 强势",
+                "≥85 强势",
                 len(
                     result_df[
-                        result_df["综合评分"] >= 80
+                        result_df["综合评分"] >= 85
                     ]
                 )
             )
@@ -924,16 +1436,10 @@ if st.button(
         with col3:
 
             st.metric(
-                "65-79 偏强",
+                "≥75 偏强",
                 len(
                     result_df[
-                        (
-                            result_df["综合评分"] >= 65
-                        )
-                        &
-                        (
-                            result_df["综合评分"] < 80
-                        )
+                        result_df["综合评分"] >= 75
                     ]
                 )
             )
@@ -960,20 +1466,20 @@ if st.button(
         st.download_button(
             "⬇️ 下载完整量化结果",
             data=csv,
-            file_name="quant_result_v4.csv",
+            file_name="quant_result_v5.csv",
             mime="text/csv",
             use_container_width=True
         )
 
 
         # =================================================
-        # 失败列表
+        # 无数据股票
         # =================================================
 
         if failed:
 
             with st.expander(
-                "⚠️ 没有行情数据的股票"
+                "⚠️ 没有成功分析的股票"
             ):
 
                 failed_names = [
@@ -993,12 +1499,12 @@ if st.button(
         )
 
         st.info(
-            "请确认 data/ 文件夹中存在对应股票的 CSV 行情文件。"
+            "请检查 data/ 文件夹中的行情 CSV。"
         )
 
 
 # =========================================================
-# 单只股票分析
+# 单股详细分析
 # =========================================================
 
 st.divider()
@@ -1009,7 +1515,7 @@ st.subheader(
 
 
 stock_code = st.text_input(
-    "请输入6位股票代码",
+    "输入6位股票代码",
     value="600900"
 ).strip()
 
@@ -1024,7 +1530,7 @@ if st.button(
     ):
 
         st.error(
-            "请输入6位数字股票代码，例如 600900。"
+            "请输入6位股票代码。"
         )
 
         st.stop()
@@ -1038,11 +1544,7 @@ if st.button(
     if df is None:
 
         st.error(
-            f"没有找到 {stock_code} 的行情数据。"
-        )
-
-        st.info(
-            f"请确认 data/{stock_code}.csv 是否存在。"
+            f"没有找到 {stock_code} 的有效行情数据。"
         )
 
         st.stop()
@@ -1065,8 +1567,59 @@ if st.button(
 
 
     # =====================================================
+    # 单股评分
+    # =====================================================
+
+    result = analyze_stock(
+        stock_code
+    )
+
+
+    if result:
+
+        col1, col2, col3, col4 = st.columns(4)
+
+
+        with col1:
+
+            st.metric(
+                "综合评分",
+                f"{result['综合评分']:.0f}"
+            )
+
+
+        with col2:
+
+            st.metric(
+                "信号",
+                result["信号"]
+            )
+
+
+        with col3:
+
+            st.metric(
+                "质量",
+                result["质量"]
+            )
+
+
+        with col4:
+
+            st.metric(
+                "风险扣分",
+                f"{result['风险扣分']:.0f}"
+            )
+
+
+    # =====================================================
     # 基础行情
     # =====================================================
+
+    st.subheader(
+        "📈 基础行情"
+    )
+
 
     col1, col2, col3 = st.columns(3)
 
@@ -1083,39 +1636,73 @@ if st.button(
     with col2:
 
         st.metric(
-            "MA5",
-            f"{latest['MA5']:.2f}"
+            "MA20",
+            f"{latest['MA20']:.2f}"
         )
 
 
     with col3:
 
         st.metric(
-            "MA20",
-            f"{latest['MA20']:.2f}"
+            "MA60",
+            f"{latest['MA60']:.2f}"
         )
 
 
     # =====================================================
-    # 均线
+    # 多周期趋势
     # =====================================================
 
     st.subheader(
-        "📈 均线趋势"
+        "📈 多周期趋势"
     )
+
+
+    trend_text = []
 
 
     if latest["MA5"] > latest["MA20"]:
 
-        st.success(
-            "🟢 MA5 > MA20：短期趋势偏强"
+        trend_text.append(
+            "🟢 MA5 > MA20"
         )
 
     else:
 
-        st.warning(
-            "🔴 MA5 < MA20：短期趋势偏弱"
+        trend_text.append(
+            "🔴 MA5 < MA20"
         )
+
+
+    if latest["MA20"] > latest["MA60"]:
+
+        trend_text.append(
+            "🟢 MA20 > MA60"
+        )
+
+    else:
+
+        trend_text.append(
+            "🔴 MA20 < MA60"
+        )
+
+
+    if latest["收盘"] > latest["MA60"]:
+
+        trend_text.append(
+            "🟢 股价 > MA60"
+        )
+
+    else:
+
+        trend_text.append(
+            "🔴 股价 < MA60"
+        )
+
+
+    for text in trend_text:
+
+        st.write(text)
 
 
     # =====================================================
@@ -1157,13 +1744,13 @@ if st.button(
     if latest["DIF"] > latest["DEA"]:
 
         st.success(
-            "🟢 DIF > DEA：MACD偏强"
+            "🟢 DIF > DEA"
         )
 
     else:
 
         st.warning(
-            "🔴 DIF < DEA：MACD偏弱"
+            "🔴 DIF < DEA"
         )
 
 
@@ -1176,7 +1763,7 @@ if st.button(
     )
 
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
 
     with col1:
@@ -1195,6 +1782,14 @@ if st.button(
         )
 
 
+    with col3:
+
+        st.metric(
+            "60日涨幅",
+            f"{latest['RETURN60']:.2f}%"
+        )
+
+
     # =====================================================
     # 成交量
     # =====================================================
@@ -1204,27 +1799,94 @@ if st.button(
     )
 
 
-    col1, col2 = st.columns(2)
+    if (
+        pd.notna(latest["VOL20"])
+        and latest["VOL20"] > 0
+    ):
+
+        col1, col2 = st.columns(2)
+
+
+        with col1:
+
+            st.metric(
+                "最新成交量",
+                f"{latest['成交量']:,.0f}"
+            )
+
+
+        with col2:
+
+            st.metric(
+                "成交量 / 20日均量",
+                f"{latest['VOL_RATIO']:.2f}x"
+            )
+
+
+        if latest["VOL_RATIO"] >= 1.2:
+
+            st.success(
+                "🟢 成交量明显放大"
+            )
+
+        elif latest["VOL_RATIO"] >= 1:
+
+            st.info(
+                "🟡 成交量高于20日均量"
+            )
+
+        else:
+
+            st.warning(
+                "⚪ 成交量低于20日均量"
+            )
+
+    else:
+
+        st.warning(
+            "⚠️ 当前行情数据没有有效成交量，"
+            "因此成交量因子不会加分。"
+        )
+
+
+    # =====================================================
+    # 风险
+    # =====================================================
+
+    st.subheader(
+        "⚠️ 风险指标"
+    )
+
+
+    col1, col2, col3 = st.columns(3)
 
 
     with col1:
 
         st.metric(
-            "最新成交量",
-            f"{latest['成交量']:,.0f}"
+            "20日波动率",
+            f"{latest['VOLATILITY20']:.2f}%"
         )
 
 
     with col2:
 
         st.metric(
-            "20日平均成交量",
-            f"{latest['VOL20']:,.0f}"
+            "ATR%",
+            f"{latest['ATR_PERCENT']:.2f}%"
+        )
+
+
+    with col3:
+
+        st.metric(
+            "距离20日高点",
+            f"{latest['DIST_HIGH20']:.2f}%"
         )
 
 
     # =====================================================
-    # K线趋势替代图
+    # 价格 + 均线
     # =====================================================
 
     st.subheader(
@@ -1237,7 +1899,6 @@ if st.button(
             "日期",
             "收盘",
             "MA5",
-            "MA10",
             "MA20",
             "MA60"
         ]
@@ -1252,7 +1913,7 @@ if st.button(
 
 
     # =====================================================
-    # MACD图
+    # MACD
     # =====================================================
 
     st.subheader(
@@ -1297,6 +1958,7 @@ if st.button(
             "成交量",
             "MA5",
             "MA20",
+            "MA60",
             "DIF",
             "DEA",
             "MACD"
