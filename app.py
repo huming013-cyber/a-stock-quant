@@ -3024,3 +3024,1440 @@ if st.button(
         "回测结果会受到股票池、市场阶段、交易成本、"
         "滑点以及数据质量影响。"
     )
+
+# =========================================================
+# V5.2 自动优化因子权重
+# =========================================================
+
+st.divider()
+
+st.subheader("🧠 V5.2 自动优化量化模型")
+
+st.write(
+    "自动测试不同的趋势、动量、MACD、成交量、突破权重，"
+    "寻找训练区间表现较好的组合，并使用后续数据进行验证。"
+)
+
+
+# =========================================================
+# V5.2 基础因子计算
+# =========================================================
+
+def calculate_factors(df, i):
+
+    if i < 60:
+        return None
+
+    row = df.iloc[i]
+
+    price = value(row, "收盘")
+    ma5 = value(row, "MA5")
+    ma20 = value(row, "MA20")
+    ma60 = value(row, "MA60")
+
+    ma20_slope = value(
+        row,
+        "MA20_SLOPE"
+    )
+
+    ma60_slope = value(
+        row,
+        "MA60_SLOPE"
+    )
+
+    dif = value(
+        row,
+        "DIF"
+    )
+
+    dea = value(
+        row,
+        "DEA"
+    )
+
+    macd_change = value(
+        row,
+        "MACD_CHANGE"
+    )
+
+    volume = value(
+        row,
+        "成交量"
+    )
+
+    volume20 = value(
+        row,
+        "VOL20"
+    )
+
+    volume_ratio = value(
+        row,
+        "VOL_RATIO"
+    )
+
+    return5 = value(
+        row,
+        "RETURN5"
+    )
+
+    return20 = value(
+        row,
+        "RETURN20"
+    )
+
+    return60 = value(
+        row,
+        "RETURN60"
+    )
+
+    high20 = value(
+        row,
+        "HIGH20"
+    )
+
+    dist_high20 = value(
+        row,
+        "DIST_HIGH20"
+    )
+
+    volatility = value(
+        row,
+        "VOLATILITY20"
+    )
+
+    atr_percent = value(
+        row,
+        "ATR_PERCENT"
+    )
+
+
+    # =====================================================
+    # 趋势因子
+    # =====================================================
+
+    trend = 0
+
+    if (
+        pd.notna(ma5)
+        and pd.notna(ma20)
+        and ma5 > ma20
+    ):
+        trend += 7
+
+    if (
+        pd.notna(ma20)
+        and pd.notna(ma60)
+        and ma20 > ma60
+    ):
+        trend += 7
+
+    if (
+        pd.notna(price)
+        and pd.notna(ma60)
+        and price > ma60
+    ):
+        trend += 5
+
+    if (
+        pd.notna(ma20_slope)
+        and ma20_slope > 0
+    ):
+        trend += 3
+
+    if (
+        pd.notna(ma60_slope)
+        and ma60_slope > 0
+    ):
+        trend += 3
+
+
+    # =====================================================
+    # 动量
+    # =====================================================
+
+    momentum = 0
+
+    if pd.notna(return5):
+
+        if return5 > 0:
+            momentum += 5
+
+        if return5 > 3:
+            momentum += 2
+
+
+    if pd.notna(return20):
+
+        if return20 > 0:
+            momentum += 6
+
+        if return20 > 5:
+            momentum += 2
+
+
+    if pd.notna(return60):
+
+        if return60 > 0:
+            momentum += 5
+
+
+    momentum = min(
+        momentum,
+        20
+    )
+
+
+    # =====================================================
+    # MACD
+    # =====================================================
+
+    macd_score = 0
+
+    if (
+        pd.notna(dif)
+        and pd.notna(dea)
+    ):
+
+        if dif > dea:
+            macd_score += 7
+
+        if dif > 0:
+            macd_score += 5
+
+
+    if (
+        pd.notna(macd_change)
+        and macd_change > 0
+    ):
+
+        macd_score += 3
+
+
+    macd_score = min(
+        macd_score,
+        15
+    )
+
+
+    # =====================================================
+    # 成交量
+    # =====================================================
+
+    volume_score = 0
+
+    volume_available = (
+        pd.notna(volume)
+        and pd.notna(volume20)
+        and volume20 > 0
+    )
+
+    if volume_available:
+
+        if volume_ratio > 1:
+            volume_score += 5
+
+        if volume_ratio >= 1.2:
+            volume_score += 5
+
+        if (
+            value(
+                row,
+                "涨跌幅",
+                0
+            ) > 0
+            and volume_ratio >= 1.2
+        ):
+            volume_score += 5
+
+
+    volume_score = min(
+        volume_score,
+        15
+    )
+
+
+    # =====================================================
+    # 突破
+    # =====================================================
+
+    breakout = 0
+
+    if (
+        pd.notna(price)
+        and pd.notna(high20)
+        and high20 > 0
+    ):
+
+        ratio = price / high20
+
+        if ratio >= 1:
+            breakout += 10
+
+        elif ratio >= 0.97:
+            breakout += 6
+
+        elif ratio >= 0.93:
+            breakout += 3
+
+
+    if (
+        breakout >= 10
+        and volume_available
+        and volume_ratio >= 1.2
+    ):
+
+        breakout += 5
+
+
+    breakout = min(
+        breakout,
+        15
+    )
+
+
+    # =====================================================
+    # 风险
+    # =====================================================
+
+    risk = 0
+
+
+    if pd.notna(volatility):
+
+        if volatility > 8:
+            risk += 8
+
+        elif volatility > 6:
+            risk += 5
+
+        elif volatility > 4:
+            risk += 2
+
+
+    if pd.notna(atr_percent):
+
+        if atr_percent > 7:
+            risk += 5
+
+        elif atr_percent > 5:
+            risk += 3
+
+
+    if pd.notna(return5):
+
+        if return5 > 15:
+            risk += 6
+
+        elif return5 > 10:
+            risk += 4
+
+        elif return5 > 7:
+            risk += 2
+
+
+    if pd.notna(dist_high20):
+
+        if dist_high20 < -15:
+            risk += 5
+
+        elif dist_high20 < -10:
+            risk += 3
+
+
+    risk = min(
+        risk,
+        20
+    )
+
+
+    return {
+        "trend": trend,
+        "momentum": momentum,
+        "macd": macd_score,
+        "volume": volume_score,
+        "breakout": breakout,
+        "risk": risk
+    }
+
+
+# =========================================================
+# 自动评分
+# =========================================================
+
+def weighted_score(
+    factors,
+    weights
+):
+
+    total_positive = (
+        factors["trend"] * weights["trend"]
+        + factors["momentum"] * weights["momentum"]
+        + factors["macd"] * weights["macd"]
+        + factors["volume"] * weights["volume"]
+        + factors["breakout"] * weights["breakout"]
+    )
+
+
+    total_risk = (
+        factors["risk"]
+        * weights["risk"]
+    )
+
+
+    score = (
+        total_positive
+        - total_risk
+    )
+
+
+    return max(
+        0,
+        min(
+            100,
+            score
+        )
+    )
+
+
+# =========================================================
+# 生成历史样本
+# =========================================================
+
+def build_training_samples(
+    holding_days,
+    start_ratio=0.0,
+    end_ratio=0.7
+):
+
+    samples = []
+
+
+    for code in STOCKS:
+
+        df = load_stock_data(
+            code
+        )
+
+
+        if df is None:
+            continue
+
+
+        total = len(df)
+
+
+        start = max(
+            60,
+            int(
+                total * start_ratio
+            )
+        )
+
+
+        end = min(
+            total - holding_days,
+            int(
+                total * end_ratio
+            )
+        )
+
+
+        for i in range(
+            start,
+            end
+        ):
+
+            factors = calculate_factors(
+                df,
+                i
+            )
+
+
+            if factors is None:
+                continue
+
+
+            buy_price = value(
+                df.iloc[i],
+                "收盘"
+            )
+
+
+            future_price = value(
+                df.iloc[
+                    i + holding_days
+                ],
+                "收盘"
+            )
+
+
+            if (
+                pd.isna(buy_price)
+                or pd.isna(future_price)
+                or buy_price <= 0
+            ):
+                continue
+
+
+            future_return = (
+                future_price
+                / buy_price
+                - 1
+            ) * 100
+
+
+            samples.append({
+
+                "代码": code,
+
+                "日期":
+                    df.iloc[i]["日期"],
+
+                "未来收益":
+                    future_return,
+
+                **factors
+            })
+
+
+    return pd.DataFrame(
+        samples
+    )
+
+
+# =========================================================
+# 验证数据
+# =========================================================
+
+def build_validation_samples(
+    holding_days,
+    start_ratio=0.7
+):
+
+    samples = []
+
+
+    for code in STOCKS:
+
+        df = load_stock_data(
+            code
+        )
+
+
+        if df is None:
+            continue
+
+
+        total = len(df)
+
+
+        start = max(
+            60,
+            int(
+                total * start_ratio
+            )
+        )
+
+
+        end = (
+            total
+            - holding_days
+        )
+
+
+        for i in range(
+            start,
+            end
+        ):
+
+            factors = calculate_factors(
+                df,
+                i
+            )
+
+
+            if factors is None:
+                continue
+
+
+            buy_price = value(
+                df.iloc[i],
+                "收盘"
+            )
+
+
+            future_price = value(
+                df.iloc[
+                    i + holding_days
+                ],
+                "收盘"
+            )
+
+
+            if (
+                pd.isna(buy_price)
+                or pd.isna(future_price)
+                or buy_price <= 0
+            ):
+                continue
+
+
+            future_return = (
+                future_price
+                / buy_price
+                - 1
+            ) * 100
+
+
+            samples.append({
+
+                "代码": code,
+
+                "日期":
+                    df.iloc[i]["日期"],
+
+                "未来收益":
+                    future_return,
+
+                **factors
+            })
+
+
+    return pd.DataFrame(
+        samples
+    )
+
+
+# =========================================================
+# 权重组合
+# =========================================================
+
+def generate_weight_sets():
+
+    weight_sets = []
+
+
+    # 基准组合
+
+    base = {
+        "trend": 1.0,
+        "momentum": 1.0,
+        "macd": 1.0,
+        "volume": 1.0,
+        "breakout": 1.0,
+        "risk": 1.0
+    }
+
+
+    weight_sets.append(
+        base
+    )
+
+
+    # =====================================================
+    # 自动搜索
+    #
+    # 总体不允许某一个因子无限放大
+    # =====================================================
+
+    values = [
+        0.6,
+        0.8,
+        1.0,
+        1.2,
+        1.4
+    ]
+
+
+    for trend in values:
+
+        for momentum in values:
+
+            for macd in values:
+
+                for volume in values:
+
+                    for breakout in values:
+
+                        weights = {
+
+                            "trend": trend,
+
+                            "momentum": momentum,
+
+                            "macd": macd,
+
+                            "volume": volume,
+
+                            "breakout": breakout,
+
+                            "risk": 1.0
+                        }
+
+
+                        average = (
+                            trend
+                            + momentum
+                            + macd
+                            + volume
+                            + breakout
+                        ) / 5
+
+
+                        # 防止所有权重同时偏高
+                        if (
+                            0.85
+                            <= average
+                            <= 1.15
+                        ):
+
+                            weight_sets.append(
+                                weights
+                            )
+
+
+    # 去重
+
+    unique = []
+
+    seen = set()
+
+
+    for w in weight_sets:
+
+        key = tuple(
+            round(
+                w[k],
+                2
+            )
+            for k in [
+                "trend",
+                "momentum",
+                "macd",
+                "volume",
+                "breakout",
+                "risk"
+            ]
+        )
+
+
+        if key not in seen:
+
+            seen.add(key)
+
+            unique.append(
+                w
+            )
+
+
+    return unique
+
+
+# =========================================================
+# 评价权重
+# =========================================================
+
+def evaluate_weights(
+    samples,
+    weights
+):
+
+    if samples.empty:
+
+        return None
+
+
+    scores = []
+
+
+    returns = []
+
+
+    for _, row in samples.iterrows():
+
+        factors = {
+
+            "trend": row["trend"],
+
+            "momentum": row["momentum"],
+
+            "macd": row["macd"],
+
+            "volume": row["volume"],
+
+            "breakout": row["breakout"],
+
+            "risk": row["risk"]
+        }
+
+
+        score = weighted_score(
+            factors,
+            weights
+        )
+
+
+        scores.append(
+            score
+        )
+
+        returns.append(
+            row["未来收益"]
+        )
+
+
+    temp = samples.copy()
+
+    temp["评分"] = scores
+
+
+    # 只关注高分信号
+
+    selected = temp[
+        temp["评分"] >= 75
+    ]
+
+
+    if len(selected) < 10:
+
+        return None
+
+
+    avg_return = (
+        selected["未来收益"]
+        .mean()
+    )
+
+
+    win_rate = (
+        selected["未来收益"] > 0
+    ).mean()
+
+
+    median_return = (
+        selected["未来收益"]
+        .median()
+    )
+
+
+    # 收益波动惩罚
+
+    return_std = (
+        selected["未来收益"]
+        .std()
+    )
+
+
+    if pd.isna(return_std):
+
+        return_std = 0
+
+
+    # =====================================================
+    # 综合优化目标
+    #
+    # 平均收益
+    # + 胜率
+    # + 中位数收益
+    # - 收益波动
+    # =====================================================
+
+    objective = (
+
+        avg_return * 0.45
+
+        + win_rate * 100 * 0.35
+
+        + median_return * 0.20
+
+        - return_std * 0.10
+    )
+
+
+    return {
+
+        "objective": objective,
+
+        "平均收益": avg_return,
+
+        "胜率": win_rate * 100,
+
+        "中位数收益": median_return,
+
+        "样本数": len(selected),
+
+        "收益波动": return_std,
+
+        "weights": weights
+    }
+
+
+# =========================================================
+# V5.2 自动优化
+# =========================================================
+
+st.subheader(
+    "⚙️ 自动寻找更优权重"
+)
+
+
+col1, col2 = st.columns(2)
+
+
+with col1:
+
+    v52_holding_days = st.selectbox(
+        "回测周期",
+        [
+            5,
+            10,
+            20
+        ],
+        index=0,
+        format_func=lambda x:
+            f"{x}个交易日",
+        key="v52_holding"
+    )
+
+
+with col2:
+
+    v52_min_samples = st.number_input(
+        "最低高分样本数",
+        min_value=10,
+        max_value=500,
+        value=20,
+        step=10
+    )
+
+
+if st.button(
+    "🧠 开始自动优化权重",
+    type="primary",
+    use_container_width=True
+):
+
+    if len(STOCKS) == 0:
+
+        st.error(
+            "❌ 股票池为空。"
+        )
+
+        st.stop()
+
+
+    with st.spinner(
+        "正在准备历史训练数据……"
+    ):
+
+        training = build_training_samples(
+            v52_holding_days,
+            start_ratio=0.0,
+            end_ratio=0.7
+        )
+
+
+    if training.empty:
+
+        st.error(
+            "❌ 没有足够的历史数据。"
+        )
+
+        st.stop()
+
+
+    st.info(
+        f"训练样本：{len(training)} 条"
+    )
+
+
+    weight_sets = (
+        generate_weight_sets()
+    )
+
+
+    st.write(
+        f"正在测试 {len(weight_sets)} "
+        "组权重组合……"
+    )
+
+
+    optimization_results = []
+
+
+    progress = st.progress(
+        0
+    )
+
+
+    for i, weights in enumerate(
+        weight_sets
+    ):
+
+        result = evaluate_weights(
+            training,
+            weights
+        )
+
+
+        if result is not None:
+
+            optimization_results.append(
+                result
+            )
+
+
+        progress.progress(
+            (i + 1)
+            / len(weight_sets)
+        )
+
+
+    if not optimization_results:
+
+        st.error(
+            "❌ 没有找到足够有效的权重组合。"
+        )
+
+        st.stop()
+
+
+    # =====================================================
+    # 排序
+    # =====================================================
+
+    optimization_results = sorted(
+        optimization_results,
+        key=lambda x:
+            x["objective"],
+        reverse=True
+    )
+
+
+    best = (
+        optimization_results[0]
+    )
+
+
+    best_weights = (
+        best["weights"]
+    )
+
+
+    # =====================================================
+    # 最佳权重
+    # =====================================================
+
+    st.success(
+        "🎯 自动优化完成！"
+    )
+
+
+    st.subheader(
+        "🏆 最佳权重"
+    )
+
+
+    col1, col2, col3 = st.columns(3)
+
+
+    with col1:
+
+        st.metric(
+            "趋势",
+            f"{best_weights['trend']:.1f}"
+        )
+
+
+    with col2:
+
+        st.metric(
+            "动量",
+            f"{best_weights['momentum']:.1f}"
+        )
+
+
+    with col3:
+
+        st.metric(
+            "MACD",
+            f"{best_weights['macd']:.1f}"
+        )
+
+
+    col1, col2, col3 = st.columns(3)
+
+
+    with col1:
+
+        st.metric(
+            "成交量",
+            f"{best_weights['volume']:.1f}"
+        )
+
+
+    with col2:
+
+        st.metric(
+            "突破",
+            f"{best_weights['breakout']:.1f}"
+        )
+
+
+    with col3:
+
+        st.metric(
+            "风险",
+            f"{best_weights['risk']:.1f}"
+        )
+
+
+    # =====================================================
+    # 训练集表现
+    # =====================================================
+
+    st.subheader(
+        "📚 训练区间表现"
+    )
+
+
+    col1, col2, col3, col4 = st.columns(4)
+
+
+    with col1:
+
+        st.metric(
+            "高分样本",
+            best["样本数"]
+        )
+
+
+    with col2:
+
+        st.metric(
+            "胜率",
+            f"{best['胜率']:.2f}%"
+        )
+
+
+    with col3:
+
+        st.metric(
+            "平均收益",
+            f"{best['平均收益']:.2f}%"
+        )
+
+
+    with col4:
+
+        st.metric(
+            "中位数收益",
+            f"{best['中位数收益']:.2f}%"
+        )
+
+
+    # =====================================================
+    # 样本外验证
+    # =====================================================
+
+    st.subheader(
+        "🧪 样本外验证"
+    )
+
+
+    with st.spinner(
+        "正在使用后30%的历史数据验证最佳权重……"
+    ):
+
+        validation = (
+            build_validation_samples(
+                v52_holding_days,
+                start_ratio=0.7
+            )
+        )
+
+
+    if validation.empty:
+
+        st.warning(
+            "⚠️ 没有足够的样本外数据。"
+        )
+
+    else:
+
+        validation_scores = []
+
+
+        for _, row in validation.iterrows():
+
+            factors = {
+
+                "trend": row["trend"],
+
+                "momentum": row["momentum"],
+
+                "macd": row["macd"],
+
+                "volume": row["volume"],
+
+                "breakout": row["breakout"],
+
+                "risk": row["risk"]
+            }
+
+
+            score = weighted_score(
+                factors,
+                best_weights
+            )
+
+
+            validation_scores.append(
+                score
+            )
+
+
+        validation = validation.copy()
+
+        validation["评分"] = (
+            validation_scores
+        )
+
+
+        validation_selected = (
+            validation[
+                validation["评分"] >= 75
+            ]
+        )
+
+
+        if len(
+            validation_selected
+        ) < v52_min_samples:
+
+            st.warning(
+                "⚠️ 样本外高分信号数量较少，"
+                "验证结果可信度有限。"
+            )
+
+
+        if not validation_selected.empty:
+
+            val_win_rate = (
+                validation_selected[
+                    "未来收益"
+                ] > 0
+            ).mean() * 100
+
+
+            val_avg_return = (
+                validation_selected[
+                    "未来收益"
+                ].mean()
+            )
+
+
+            val_median_return = (
+                validation_selected[
+                    "未来收益"
+                ].median()
+            )
+
+
+            val_min_return = (
+                validation_selected[
+                    "未来收益"
+                ].min()
+            )
+
+
+            col1, col2, col3, col4 = st.columns(4)
+
+
+            with col1:
+
+                st.metric(
+                    "验证样本",
+                    len(
+                        validation_selected
+                    )
+                )
+
+
+            with col2:
+
+                st.metric(
+                    "验证胜率",
+                    f"{val_win_rate:.2f}%"
+                )
+
+
+            with col3:
+
+                st.metric(
+                    "验证平均收益",
+                    f"{val_avg_return:.2f}%"
+                )
+
+
+            with col4:
+
+                st.metric(
+                    "验证最低收益",
+                    f"{val_min_return:.2f}%"
+                )
+
+
+            # =================================================
+            # 验证判断
+            # =================================================
+
+            if (
+                val_win_rate >= 55
+                and val_avg_return > 0
+            ):
+
+                st.success(
+                    "🟢 样本外验证表现为正，"
+                    "说明自动优化后的权重在未参与训练的数据上"
+                    "仍然存在一定统计优势。"
+                )
+
+            elif (
+                val_avg_return > 0
+            ):
+
+                st.info(
+                    "🟡 样本外平均收益为正，"
+                    "但优势较弱，需要更多数据验证。"
+                )
+
+            else:
+
+                st.error(
+                    "🔴 样本外表现没有显示稳定优势。"
+                    "不要直接把训练集上的最佳权重当成最终模型。"
+                )
+
+
+            # =================================================
+            # 验证样本
+            # =================================================
+
+            st.subheader(
+                "📋 样本外验证记录"
+            )
+
+
+            st.dataframe(
+                validation_selected.sort_values(
+                    "评分",
+                    ascending=False
+                ).head(100)[
+                    [
+                        "代码",
+                        "日期",
+                        "评分",
+                        "未来收益"
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True
+            )
+
+
+    # =====================================================
+    # 权重排名
+    # =====================================================
+
+    st.subheader(
+        "🥇 最佳权重组合 Top 10"
+    )
+
+
+    rows = []
+
+
+    for item in optimization_results[:10]:
+
+        w = item["weights"]
+
+
+        rows.append({
+
+            "趋势权重":
+                w["trend"],
+
+            "动量权重":
+                w["momentum"],
+
+            "MACD权重":
+                w["macd"],
+
+            "成交量权重":
+                w["volume"],
+
+            "突破权重":
+                w["breakout"],
+
+            "风险权重":
+                w["risk"],
+
+            "训练胜率":
+                item["胜率"],
+
+            "训练平均收益":
+                item["平均收益"],
+
+            "训练样本":
+                item["样本数"],
+
+            "优化得分":
+                item["objective"]
+        })
+
+
+    top_weights_df = pd.DataFrame(
+        rows
+    )
+
+
+    st.dataframe(
+        top_weights_df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+    # =====================================================
+    # 保存最佳权重
+    # =====================================================
+
+    weights_df = pd.DataFrame([
+        best_weights
+    ])
+
+
+    weights_csv = (
+        weights_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        )
+    )
+
+
+    st.download_button(
+        "⬇️ 下载最佳权重",
+        data=weights_csv,
+        file_name="best_weights_v52.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+
+    st.caption(
+        "⚠️ V5.2 使用前70%历史数据寻找权重，"
+        "后30%数据进行样本外验证。"
+        "这比直接用全部历史数据寻找最优权重更可靠，"
+        "但仍不能保证未来收益。"
+    )
