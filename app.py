@@ -3,6 +3,10 @@ import pandas as pd
 import os
 
 
+# =========================
+# 页面设置
+# =========================
+
 st.set_page_config(
     page_title="A股量化选股助手",
     page_icon="📈",
@@ -11,11 +15,51 @@ st.set_page_config(
 
 
 st.title("📈 A股量化选股助手")
-st.caption("V1.3 · 本地行情数据 + MA + MACD")
+st.caption("V2.0 · 一键量化 · MA + MACD + 成交量")
 
 
 # =========================
-# 读取 GitHub 中的 CSV
+# 股票列表
+# =========================
+
+STOCK_LIST_FILE = "stock_list.csv"
+
+
+@st.cache_data
+def load_stock_list():
+
+    if not os.path.exists(STOCK_LIST_FILE):
+
+        raise FileNotFoundError(
+            f"找不到 {STOCK_LIST_FILE}"
+        )
+
+    df = pd.read_csv(
+        STOCK_LIST_FILE,
+        dtype={"code": str},
+        encoding="utf-8-sig"
+    )
+
+    if "code" not in df.columns:
+
+        raise ValueError(
+            "stock_list.csv 中没有找到 code 列"
+        )
+
+    stocks = (
+        df["code"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .str.zfill(6)
+        .tolist()
+    )
+
+    return stocks
+
+
+# =========================
+# 读取股票行情
 # =========================
 
 @st.cache_data
@@ -25,27 +69,30 @@ def load_stock_data(code):
 
     if not os.path.exists(filename):
 
-        raise FileNotFoundError(
-            f"暂时没有 {code} 的行情数据。"
-        )
+        return None
 
     df = pd.read_csv(
-        filename
+        filename,
+        encoding="utf-8-sig"
     )
 
     if df.empty:
 
-        raise ValueError(
-            "行情数据为空。"
-        )
+        return None
 
     # 日期
+
+    if "日期" not in df.columns:
+
+        return None
+
     df["日期"] = pd.to_datetime(
         df["日期"],
         errors="coerce"
     )
 
     # 数字字段
+
     number_columns = [
         "开盘",
         "收盘",
@@ -56,10 +103,14 @@ def load_stock_data(code):
 
     for column in number_columns:
 
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce"
-        )
+        if column in df.columns:
+
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
+
+    # 删除无效数据
 
     df = df.dropna(
         subset=["日期", "收盘"]
@@ -72,6 +123,10 @@ def load_stock_data(code):
     df = df.reset_index(
         drop=True
     )
+
+    if len(df) < 30:
+
+        return None
 
     # =========================
     # 涨跌幅
@@ -146,39 +201,445 @@ def load_stock_data(code):
     ) * 2
 
     # =========================
-    # 成交量均线
+    # 成交量
     # =========================
 
-    df["VOL5"] = (
-        df["成交量"]
-        .rolling(5)
-        .mean()
-    )
+    if "成交量" in df.columns:
 
-    df["VOL20"] = (
-        df["成交量"]
-        .rolling(20)
-        .mean()
-    )
+        df["VOL5"] = (
+            df["成交量"]
+            .rolling(5)
+            .mean()
+        )
+
+        df["VOL20"] = (
+            df["成交量"]
+            .rolling(20)
+            .mean()
+        )
+
+    else:
+
+        df["VOL5"] = 0
+        df["VOL20"] = 0
 
     return df
 
 
 # =========================
-# 股票输入
+# 单只股票量化
 # =========================
 
-st.subheader("🔎 股票分析")
+def analyze_stock(code):
+
+    df = load_stock_data(code)
+
+    if df is None:
+
+        return None
+
+    latest = df.iloc[-1]
+
+    price = latest["收盘"]
+
+    change = latest["涨跌幅"]
+
+    ma5 = latest["MA5"]
+
+    ma20 = latest["MA20"]
+
+    dif = latest["DIF"]
+
+    dea = latest["DEA"]
+
+    volume = latest["成交量"]
+
+    volume20 = latest["VOL20"]
+
+
+    # =========================
+    # 量化评分
+    # =========================
+
+    score = 0
+
+
+    # MA趋势
+
+    if pd.notna(ma5) and pd.notna(ma20):
+
+        if ma5 > ma20:
+
+            score += 1
+
+
+    # MACD
+
+    if pd.notna(dif) and pd.notna(dea):
+
+        if dif > dea:
+
+            score += 1
+
+
+    # 成交量
+
+    if pd.notna(volume) and pd.notna(volume20):
+
+        if volume > volume20:
+
+            score += 1
+
+
+    # =========================
+    # 信号
+    # =========================
+
+    if score == 3:
+
+        signal = "🟢 强势"
+
+    elif score == 2:
+
+        signal = "🟡 偏强"
+
+    elif score == 1:
+
+        signal = "🟠 偏弱"
+
+    else:
+
+        signal = "🔴 弱势"
+
+
+    return {
+
+        "代码": code,
+
+        "日期": latest["日期"],
+
+        "收盘价": price,
+
+        "涨跌幅": change,
+
+        "MA5": ma5,
+
+        "MA20": ma20,
+
+        "DIF": dif,
+
+        "DEA": dea,
+
+        "成交量": volume,
+
+        "成交量20日": volume20,
+
+        "评分": score,
+
+        "信号": signal
+
+    }
+
+
+# =========================
+# 加载股票列表
+# =========================
+
+try:
+
+    STOCKS = load_stock_list()
+
+except Exception as e:
+
+    st.error(
+        "股票列表读取失败"
+    )
+
+    st.code(
+        str(e)
+    )
+
+    st.stop()
+
+
+# =========================
+# 股票数量
+# =========================
+
+st.info(
+    f"📋 当前股票池：{len(STOCKS)} 只股票"
+)
+
+
+# =========================
+# 一键量化
+# =========================
+
+st.subheader("🚀 一键量化")
+
+
+if st.button(
+    "🚀 开始一键量化",
+    type="primary",
+    use_container_width=True
+):
+
+    results = []
+
+    failed = []
+
+
+    progress = st.progress(0)
+
+    status = st.empty()
+
+
+    total = len(STOCKS)
+
+
+    for i, code in enumerate(STOCKS):
+
+        status.write(
+            f"正在分析 {code} "
+            f"（{i + 1} / {total}）"
+        )
+
+
+        try:
+
+            result = analyze_stock(code)
+
+            if result is not None:
+
+                results.append(result)
+
+            else:
+
+                failed.append(code)
+
+        except Exception:
+
+            failed.append(code)
+
+
+        progress.progress(
+            (i + 1) / total
+        )
+
+
+    status.success(
+        "🎉 一键量化完成！"
+    )
+
+
+    # =========================
+    # 量化结果
+    # =========================
+
+    if results:
+
+        result_df = pd.DataFrame(
+            results
+        )
+
+
+        # 按评分排序
+
+        result_df = result_df.sort_values(
+            by=[
+                "评分",
+                "涨跌幅"
+            ],
+            ascending=[
+                False,
+                False
+            ]
+        )
+
+
+        st.subheader(
+            "🏆 量化选股结果"
+        )
+
+
+        # =========================
+        # 强势股票
+        # =========================
+
+        strong = result_df[
+            result_df["评分"] == 3
+        ]
+
+
+        if not strong.empty:
+
+            st.success(
+                f"🟢 强势股票：{len(strong)} 只"
+            )
+
+
+            st.dataframe(
+                strong[
+                    [
+                        "代码",
+                        "日期",
+                        "收盘价",
+                        "涨跌幅",
+                        "MA5",
+                        "MA20",
+                        "DIF",
+                        "DEA",
+                        "评分",
+                        "信号"
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True
+            )
+
+
+        # =========================
+        # 全部结果
+        # =========================
+
+        st.subheader(
+            "📊 全部量化结果"
+        )
+
+
+        st.dataframe(
+            result_df[
+                [
+                    "代码",
+                    "日期",
+                    "收盘价",
+                    "涨跌幅",
+                    "MA5",
+                    "MA20",
+                    "DIF",
+                    "DEA",
+                    "成交量",
+                    "成交量20日",
+                    "评分",
+                    "信号"
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+        # =========================
+        # 结果统计
+        # =========================
+
+        col1, col2, col3, col4 = st.columns(4)
+
+
+        with col1:
+
+            st.metric(
+                "分析成功",
+                len(results)
+            )
+
+
+        with col2:
+
+            st.metric(
+                "强势",
+                len(
+                    result_df[
+                        result_df["评分"] == 3
+                    ]
+                )
+            )
+
+
+        with col3:
+
+            st.metric(
+                "偏强",
+                len(
+                    result_df[
+                        result_df["评分"] == 2
+                    ]
+                )
+            )
+
+
+        with col4:
+
+            st.metric(
+                "无法分析",
+                len(failed)
+            )
+
+
+        # =========================
+        # 下载结果
+        # =========================
+
+        csv = result_df.to_csv(
+            index=False,
+            encoding="utf-8-sig"
+        )
+
+
+        st.download_button(
+            "⬇️ 下载量化结果 CSV",
+            data=csv,
+            file_name="quant_result.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+
+        # =========================
+        # 没有行情数据的股票
+        # =========================
+
+        if failed:
+
+            with st.expander(
+                "⚠️ 没有行情数据的股票"
+            ):
+
+                st.write(
+                    failed
+                )
+
+
+    else:
+
+        st.error(
+            "❌ 没有成功分析任何股票。"
+        )
+
+        st.info(
+            "请检查 GitHub 的 data/ 文件夹是否存在行情 CSV。"
+        )
+
+
+# =========================
+# 单只股票详细分析
+# =========================
+
+st.divider()
+
+st.subheader(
+    "🔎 单只股票详细分析"
+)
+
 
 stock_code = st.text_input(
-    "请输入A股股票代码",
+    "输入6位A股代码",
     value="600900"
 ).strip()
 
 
 if st.button(
-    "开始分析",
-    type="primary"
+    "📊 分析这只股票"
 ):
 
     if not stock_code.isdigit():
@@ -189,6 +650,7 @@ if st.button(
 
         st.stop()
 
+
     if len(stock_code) != 6:
 
         st.error(
@@ -197,77 +659,26 @@ if st.button(
 
         st.stop()
 
-    # =========================
-    # 读取数据
-    # =========================
 
-    try:
+    df = load_stock_data(
+        stock_code
+    )
 
-        with st.spinner(
-            "正在读取行情数据……"
-        ):
 
-            df = load_stock_data(
-                stock_code
-            )
-
-    except FileNotFoundError as e:
+    if df is None:
 
         st.error(
-            "没有找到这只股票的行情文件。"
-        )
-
-        st.info(
-            "请先让 GitHub Actions 更新行情数据。"
-        )
-
-        st.code(
-            str(e)
+            f"没有找到 {stock_code} 的行情数据。"
         )
 
         st.stop()
 
-    except Exception as e:
-
-        st.error(
-            "读取行情数据失败。"
-        )
-
-        st.code(
-            str(e)
-        )
-
-        st.stop()
-
-    # =========================
-    # 最新数据
-    # =========================
 
     latest = df.iloc[-1]
 
-    price = latest["收盘"]
-
-    change = latest["涨跌幅"]
-
-    ma5 = latest["MA5"]
-
-    ma10 = latest["MA10"]
-
-    ma20 = latest["MA20"]
-
-    dif = latest["DIF"]
-
-    dea = latest["DEA"]
-
-    macd = latest["MACD"]
-
-    volume = latest["成交量"]
-
-    volume20 = latest["VOL20"]
-
 
     # =========================
-    # 基础行情
+    # 最新行情
     # =========================
 
     st.success(
@@ -284,8 +695,8 @@ if st.button(
 
         st.metric(
             "最新收盘价",
-            f"{price:.2f}",
-            f"{change:.2f}%"
+            f"{latest['收盘']:.2f}",
+            f"{latest['涨跌幅']:.2f}%"
         )
 
 
@@ -293,7 +704,7 @@ if st.button(
 
         st.metric(
             "MA5",
-            f"{ma5:.2f}"
+            f"{latest['MA5']:.2f}"
         )
 
 
@@ -301,45 +712,20 @@ if st.button(
 
         st.metric(
             "MA20",
-            f"{ma20:.2f}"
+            f"{latest['MA20']:.2f}"
         )
 
 
     # =========================
-    # 均线
+    # 趋势
     # =========================
 
-    st.subheader("📈 均线分析")
+    st.subheader(
+        "📈 均线分析"
+    )
 
 
-    col1, col2, col3 = st.columns(3)
-
-
-    with col1:
-
-        st.metric(
-            "MA5",
-            f"{ma5:.2f}"
-        )
-
-
-    with col2:
-
-        st.metric(
-            "MA10",
-            f"{ma10:.2f}"
-        )
-
-
-    with col3:
-
-        st.metric(
-            "MA20",
-            f"{ma20:.2f}"
-        )
-
-
-    if ma5 > ma20:
+    if latest["MA5"] > latest["MA20"]:
 
         st.success(
             "🟢 MA5 > MA20：短期趋势偏强"
@@ -356,7 +742,9 @@ if st.button(
     # MACD
     # =========================
 
-    st.subheader("📊 MACD")
+    st.subheader(
+        "📊 MACD"
+    )
 
 
     col1, col2, col3 = st.columns(3)
@@ -366,7 +754,7 @@ if st.button(
 
         st.metric(
             "DIF",
-            f"{dif:.3f}"
+            f"{latest['DIF']:.3f}"
         )
 
 
@@ -374,7 +762,7 @@ if st.button(
 
         st.metric(
             "DEA",
-            f"{dea:.3f}"
+            f"{latest['DEA']:.3f}"
         )
 
 
@@ -382,11 +770,11 @@ if st.button(
 
         st.metric(
             "MACD",
-            f"{macd:.3f}"
+            f"{latest['MACD']:.3f}"
         )
 
 
-    if dif > dea:
+    if latest["DIF"] > latest["DEA"]:
 
         st.success(
             "🟢 DIF > DEA：MACD偏强"
@@ -403,7 +791,9 @@ if st.button(
     # 成交量
     # =========================
 
-    st.subheader("🔊 成交量")
+    st.subheader(
+        "🔊 成交量"
+    )
 
 
     col1, col2 = st.columns(2)
@@ -413,7 +803,7 @@ if st.button(
 
         st.metric(
             "最新成交量",
-            f"{volume:,.0f}"
+            f"{latest['成交量']:,.0f}"
         )
 
 
@@ -421,75 +811,12 @@ if st.button(
 
         st.metric(
             "20日平均成交量",
-            f"{volume20:,.0f}"
-        )
-
-
-    if volume > volume20:
-
-        st.success(
-            "🟢 成交量高于20日平均"
-        )
-
-    else:
-
-        st.info(
-            "⚪ 成交量低于20日平均"
+            f"{latest['VOL20']:,.0f}"
         )
 
 
     # =========================
-    # 综合量化评分
-    # =========================
-
-    st.subheader("🤖 量化评分")
-
-
-    score = 0
-
-
-    if ma5 > ma20:
-
-        score += 1
-
-
-    if dif > dea:
-
-        score += 1
-
-
-    if volume > volume20:
-
-        score += 1
-
-
-    if score == 3:
-
-        st.success(
-            "🟢 强势：3 / 3"
-        )
-
-    elif score == 2:
-
-        st.info(
-            "🟡 偏强：2 / 3"
-        )
-
-    elif score == 1:
-
-        st.warning(
-            "🟠 偏弱：1 / 3"
-        )
-
-    else:
-
-        st.error(
-            "🔴 弱势：0 / 3"
-        )
-
-
-    # =========================
-    # 收盘价 + 均线
+    # K线趋势图
     # =========================
 
     st.subheader(
@@ -516,7 +843,7 @@ if st.button(
 
 
     # =========================
-    # MACD图
+    # MACD走势图
     # =========================
 
     st.subheader(
@@ -573,6 +900,10 @@ if st.button(
         hide_index=True
     )
 
+
+# =========================
+# 页脚
+# =========================
 
 st.divider()
 
