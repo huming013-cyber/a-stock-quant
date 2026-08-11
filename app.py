@@ -1983,3 +1983,1044 @@ st.caption(
     "⚠️ 本程序仅用于量化研究、学习和历史数据分析，"
     "不构成投资建议。"
 )
+
+# =========================================================
+# V5.1 历史回测
+# =========================================================
+
+st.divider()
+
+st.subheader("🧪 V5.1 历史回测")
+
+st.write(
+    "测试历史上出现不同量化评分后，"
+    "未来5/10/20个交易日的实际表现。"
+)
+
+
+# =========================================================
+# 历史评分函数
+# =========================================================
+
+def calculate_historical_score(df, i):
+
+    if i < 60:
+
+        return np.nan
+
+    row = df.iloc[i]
+
+    price = value(
+        row,
+        "收盘"
+    )
+
+    ma5 = value(
+        row,
+        "MA5"
+    )
+
+    ma20 = value(
+        row,
+        "MA20"
+    )
+
+    ma60 = value(
+        row,
+        "MA60"
+    )
+
+    ma20_slope = value(
+        row,
+        "MA20_SLOPE"
+    )
+
+    ma60_slope = value(
+        row,
+        "MA60_SLOPE"
+    )
+
+    dif = value(
+        row,
+        "DIF"
+    )
+
+    dea = value(
+        row,
+        "DEA"
+    )
+
+    macd_change = value(
+        row,
+        "MACD_CHANGE"
+    )
+
+    volume = value(
+        row,
+        "成交量"
+    )
+
+    volume20 = value(
+        row,
+        "VOL20"
+    )
+
+    volume_ratio = value(
+        row,
+        "VOL_RATIO"
+    )
+
+    return5 = value(
+        row,
+        "RETURN5"
+    )
+
+    return20 = value(
+        row,
+        "RETURN20"
+    )
+
+    return60 = value(
+        row,
+        "RETURN60"
+    )
+
+    high20 = value(
+        row,
+        "HIGH20"
+    )
+
+    dist_high20 = value(
+        row,
+        "DIST_HIGH20"
+    )
+
+    volatility = value(
+        row,
+        "VOLATILITY20"
+    )
+
+    atr_percent = value(
+        row,
+        "ATR_PERCENT"
+    )
+
+
+    # =====================================================
+    # 趋势 25
+    # =====================================================
+
+    trend = 0
+
+    if (
+        pd.notna(ma5)
+        and pd.notna(ma20)
+        and ma5 > ma20
+    ):
+
+        trend += 7
+
+    if (
+        pd.notna(ma20)
+        and pd.notna(ma60)
+        and ma20 > ma60
+    ):
+
+        trend += 7
+
+    if (
+        pd.notna(price)
+        and pd.notna(ma60)
+        and price > ma60
+    ):
+
+        trend += 5
+
+    if (
+        pd.notna(ma20_slope)
+        and ma20_slope > 0
+    ):
+
+        trend += 3
+
+    if (
+        pd.notna(ma60_slope)
+        and ma60_slope > 0
+    ):
+
+        trend += 3
+
+
+    # =====================================================
+    # 动量 20
+    # =====================================================
+
+    momentum = 0
+
+    if pd.notna(return5):
+
+        if return5 > 0:
+
+            momentum += 5
+
+        if return5 > 3:
+
+            momentum += 2
+
+    if pd.notna(return20):
+
+        if return20 > 0:
+
+            momentum += 6
+
+        if return20 > 5:
+
+            momentum += 2
+
+    if pd.notna(return60):
+
+        if return60 > 0:
+
+            momentum += 5
+
+    momentum = min(
+        momentum,
+        20
+    )
+
+
+    # =====================================================
+    # MACD 15
+    # =====================================================
+
+    macd_score = 0
+
+    if (
+        pd.notna(dif)
+        and pd.notna(dea)
+    ):
+
+        if dif > dea:
+
+            macd_score += 7
+
+        if dif > 0:
+
+            macd_score += 5
+
+    if (
+        pd.notna(macd_change)
+        and macd_change > 0
+    ):
+
+        macd_score += 3
+
+    macd_score = min(
+        macd_score,
+        15
+    )
+
+
+    # =====================================================
+    # 成交量 15
+    # =====================================================
+
+    volume_score = 0
+
+    volume_available = (
+        pd.notna(volume)
+        and pd.notna(volume20)
+        and volume20 > 0
+    )
+
+    if volume_available:
+
+        if volume_ratio > 1:
+
+            volume_score += 5
+
+        if volume_ratio >= 1.2:
+
+            volume_score += 5
+
+        if (
+            row["涨跌幅"] > 0
+            and volume_ratio >= 1.2
+        ):
+
+            volume_score += 5
+
+
+    # =====================================================
+    # 突破 15
+    # =====================================================
+
+    breakout = 0
+
+    if (
+        pd.notna(price)
+        and pd.notna(high20)
+        and high20 > 0
+    ):
+
+        ratio = price / high20
+
+        if ratio >= 1:
+
+            breakout += 10
+
+        elif ratio >= 0.97:
+
+            breakout += 6
+
+        elif ratio >= 0.93:
+
+            breakout += 3
+
+
+    if (
+        breakout >= 10
+        and volume_available
+        and volume_ratio >= 1.2
+    ):
+
+        breakout += 5
+
+    breakout = min(
+        breakout,
+        15
+    )
+
+
+    # =====================================================
+    # 风险扣分
+    # =====================================================
+
+    risk_penalty = 0
+
+    if pd.notna(volatility):
+
+        if volatility > 8:
+
+            risk_penalty += 8
+
+        elif volatility > 6:
+
+            risk_penalty += 5
+
+        elif volatility > 4:
+
+            risk_penalty += 2
+
+
+    if pd.notna(atr_percent):
+
+        if atr_percent > 7:
+
+            risk_penalty += 5
+
+        elif atr_percent > 5:
+
+            risk_penalty += 3
+
+
+    if pd.notna(return5):
+
+        if return5 > 15:
+
+            risk_penalty += 6
+
+        elif return5 > 10:
+
+            risk_penalty += 4
+
+        elif return5 > 7:
+
+            risk_penalty += 2
+
+
+    if pd.notna(dist_high20):
+
+        if dist_high20 < -15:
+
+            risk_penalty += 5
+
+        elif dist_high20 < -10:
+
+            risk_penalty += 3
+
+
+    risk_penalty = min(
+        risk_penalty,
+        20
+    )
+
+
+    # =====================================================
+    # 最终评分
+    # =====================================================
+
+    score = (
+        trend
+        + momentum
+        + macd_score
+        + volume_score
+        + breakout
+        - risk_penalty
+    )
+
+    return max(
+        0,
+        min(
+            100,
+            score
+        )
+    )
+
+
+# =========================================================
+# 单只股票历史回测
+# =========================================================
+
+def backtest_stock(
+    code,
+    holding_days
+):
+
+    df = load_stock_data(
+        code
+    )
+
+    if df is None:
+
+        return pd.DataFrame()
+
+
+    df = df.copy()
+
+    records = []
+
+
+    # 至少需要60天指标
+    # 同时需要未来 holding_days 天数据
+
+    last_index = (
+        len(df)
+        - holding_days
+    )
+
+
+    for i in range(
+        60,
+        last_index
+    ):
+
+        score = calculate_historical_score(
+            df,
+            i
+        )
+
+
+        if pd.isna(score):
+
+            continue
+
+
+        buy_price = (
+            df.iloc[i]["收盘"]
+        )
+
+        future_price = (
+            df.iloc[
+                i + holding_days
+            ]["收盘"]
+        )
+
+
+        if (
+            pd.isna(buy_price)
+            or pd.isna(future_price)
+            or buy_price <= 0
+        ):
+
+            continue
+
+
+        future_return = (
+            future_price
+            / buy_price
+            - 1
+        ) * 100
+
+
+        records.append({
+
+            "股票名称": STOCK_NAMES.get(
+                code,
+                "未知股票"
+            ),
+
+            "代码": code,
+
+            "买入日期":
+                df.iloc[i]["日期"],
+
+            "评分": score,
+
+            "买入价":
+                buy_price,
+
+            "未来收益":
+                future_return
+
+        })
+
+
+    return pd.DataFrame(
+        records
+    )
+
+
+# =========================================================
+# 运行全部历史回测
+# =========================================================
+
+def run_backtest(
+    holding_days
+):
+
+    all_results = []
+
+
+    progress = st.progress(
+        0
+    )
+
+    status = st.empty()
+
+
+    total = len(STOCKS)
+
+
+    if total == 0:
+
+        return pd.DataFrame()
+
+
+    for i, code in enumerate(STOCKS):
+
+        status.write(
+            f"正在回测："
+            f"{STOCK_NAMES.get(code, '未知股票')} "
+            f"({code}) "
+            f"— {i + 1}/{total}"
+        )
+
+
+        try:
+
+            result = backtest_stock(
+                code,
+                holding_days
+            )
+
+
+            if not result.empty:
+
+                all_results.append(
+                    result
+                )
+
+
+        except Exception:
+
+            pass
+
+
+        progress.progress(
+            (i + 1) / total
+        )
+
+
+    status.success(
+        "✅ 历史回测完成"
+    )
+
+
+    if not all_results:
+
+        return pd.DataFrame()
+
+
+    return pd.concat(
+        all_results,
+        ignore_index=True
+    )
+
+
+# =========================================================
+# 回测设置
+# =========================================================
+
+col1, col2 = st.columns(2)
+
+
+with col1:
+
+    holding_days = st.selectbox(
+        "📅 持有周期",
+        [
+            5,
+            10,
+            20
+        ],
+        format_func=lambda x:
+            f"{x}个交易日"
+    )
+
+
+with col2:
+
+    min_score = st.slider(
+        "🎯 最低评分",
+        min_value=50,
+        max_value=90,
+        value=70,
+        step=5
+    )
+
+
+# =========================================================
+# 开始回测
+# =========================================================
+
+if st.button(
+    "🧪 开始历史回测",
+    type="primary",
+    use_container_width=True
+):
+
+    if not STOCKS:
+
+        st.error(
+            "❌ 股票池为空。"
+        )
+
+        st.stop()
+
+
+    with st.spinner(
+        "正在进行历史回测，请稍候……"
+    ):
+
+        backtest_df = run_backtest(
+            holding_days
+        )
+
+
+    if backtest_df.empty:
+
+        st.error(
+            "❌ 没有足够的历史数据进行回测。"
+        )
+
+        st.stop()
+
+
+    # =====================================================
+    # 筛选评分
+    # =====================================================
+
+    selected = backtest_df[
+        backtest_df["评分"] >= min_score
+    ].copy()
+
+
+    if selected.empty:
+
+        st.warning(
+            f"历史上没有找到评分 ≥ {min_score} "
+            f"的样本。"
+        )
+
+        st.stop()
+
+
+    # =====================================================
+    # 核心指标
+    # =====================================================
+
+    total_trades = len(
+        selected
+    )
+
+
+    win_rate = (
+        selected["未来收益"] > 0
+    ).mean() * 100
+
+
+    avg_return = (
+        selected["未来收益"]
+        .mean()
+    )
+
+
+    median_return = (
+        selected["未来收益"]
+        .median()
+    )
+
+
+    max_return = (
+        selected["未来收益"]
+        .max()
+    )
+
+
+    min_return = (
+        selected["未来收益"]
+        .min()
+    )
+
+
+    # =====================================================
+    # 显示
+    # =====================================================
+
+    st.subheader(
+        "📊 回测核心结果"
+    )
+
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+
+    with col1:
+
+        st.metric(
+            "历史样本",
+            f"{total_trades}"
+        )
+
+
+    with col2:
+
+        st.metric(
+            "胜率",
+            f"{win_rate:.2f}%"
+        )
+
+
+    with col3:
+
+        st.metric(
+            "平均收益",
+            f"{avg_return:.2f}%"
+        )
+
+
+    with col4:
+
+        st.metric(
+            "中位数收益",
+            f"{median_return:.2f}%"
+        )
+
+
+    with col5:
+
+        st.metric(
+            "最大收益",
+            f"{max_return:.2f}%"
+        )
+
+
+    st.write(
+        f"最低收益：**{min_return:.2f}%**"
+    )
+
+
+    # =====================================================
+    # 评分分组回测
+    # =====================================================
+
+    st.subheader(
+        "🎯 不同评分的历史表现"
+    )
+
+
+    bins = [
+        0,
+        50,
+        60,
+        70,
+        75,
+        80,
+        85,
+        90,
+        101
+    ]
+
+
+    labels = [
+        "0-49",
+        "50-59",
+        "60-69",
+        "70-74",
+        "75-79",
+        "80-84",
+        "85-89",
+        "90-100"
+    ]
+
+
+    backtest_df["评分区间"] = pd.cut(
+        backtest_df["评分"],
+        bins=bins,
+        labels=labels,
+        right=False
+    )
+
+
+    grouped = (
+        backtest_df
+        .groupby(
+            "评分区间",
+            observed=False
+        )
+        .agg(
+            样本数=("未来收益", "count"),
+
+            胜率=(
+                "未来收益",
+                lambda x:
+                    (x > 0).mean() * 100
+            ),
+
+            平均收益=(
+                "未来收益",
+                "mean"
+            ),
+
+            中位数收益=(
+                "未来收益",
+                "median"
+            ),
+
+            最大收益=(
+                "未来收益",
+                "max"
+            ),
+
+            最小收益=(
+                "未来收益",
+                "min"
+            )
+        )
+        .reset_index()
+    )
+
+
+    st.dataframe(
+        grouped,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+    # =====================================================
+    # 收益曲线
+    # =====================================================
+
+    st.subheader(
+        "📈 历史收益分布"
+    )
+
+
+    st.bar_chart(
+        grouped.set_index(
+            "评分区间"
+        )[
+            [
+                "平均收益"
+            ]
+        ]
+    )
+
+
+    # =====================================================
+    # 按股票统计
+    # =====================================================
+
+    st.subheader(
+        "🏆 各股票历史表现"
+    )
+
+
+    stock_stats = (
+        selected
+        .groupby(
+            [
+                "股票名称",
+                "代码"
+            ]
+        )
+        .agg(
+
+            样本数=(
+                "未来收益",
+                "count"
+            ),
+
+            胜率=(
+                "未来收益",
+                lambda x:
+                    (x > 0).mean() * 100
+            ),
+
+            平均收益=(
+                "未来收益",
+                "mean"
+            ),
+
+            中位数收益=(
+                "未来收益",
+                "median"
+            ),
+
+            最大收益=(
+                "未来收益",
+                "max"
+            ),
+
+            最小收益=(
+                "未来收益",
+                "min"
+            )
+        )
+        .reset_index()
+    )
+
+
+    stock_stats = stock_stats.sort_values(
+        [
+            "胜率",
+            "平均收益"
+        ],
+        ascending=[
+            False,
+            False
+        ]
+    )
+
+
+    st.dataframe(
+        stock_stats,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+    # =====================================================
+    # 最近历史信号
+    # =====================================================
+
+    st.subheader(
+        "🔎 历史高分信号样本"
+    )
+
+
+    recent_signals = (
+        selected
+        .sort_values(
+            "买入日期",
+            ascending=False
+        )
+        .head(50)
+    )
+
+
+    st.dataframe(
+        recent_signals[
+            [
+                "股票名称",
+                "代码",
+                "买入日期",
+                "评分",
+                "买入价",
+                "未来收益"
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+    # =====================================================
+    # 下载
+    # =====================================================
+
+    csv = backtest_df.to_csv(
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+
+    st.download_button(
+        "⬇️ 下载完整历史回测数据",
+        data=csv,
+        file_name=(
+            f"backtest_{holding_days}days.csv"
+        ),
+        mime="text/csv",
+        use_container_width=True
+    )
+
+
+    # =====================================================
+    # 结论提示
+    # =====================================================
+
+    st.subheader(
+        "🧠 模型有效性参考"
+    )
+
+
+    if (
+        win_rate >= 60
+        and avg_return > 0
+    ):
+
+        st.success(
+            f"当前筛选条件下，历史胜率 "
+            f"为 {win_rate:.2f}%，"
+            f"平均收益为 {avg_return:.2f}%。"
+            "历史样本表现较好，可以继续进行样本外验证。"
+        )
+
+    elif (
+        win_rate >= 50
+        and avg_return > 0
+    ):
+
+        st.info(
+            f"历史胜率 {win_rate:.2f}%，"
+            f"平均收益 {avg_return:.2f}%。"
+            "模型存在一定正向效果，但还需要更多样本验证。"
+        )
+
+    else:
+
+        st.warning(
+            f"历史胜率 {win_rate:.2f}%，"
+            f"平均收益 {avg_return:.2f}%。"
+            "目前不能证明模型具有稳定优势。"
+        )
+
+
+    st.caption(
+        "⚠️ 历史回测不代表未来收益。"
+        "回测结果会受到股票池、市场阶段、交易成本、"
+        "滑点以及数据质量影响。"
+    )
