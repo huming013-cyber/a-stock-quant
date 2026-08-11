@@ -1,38 +1,59 @@
 import os
+import time
 import requests
 import pandas as pd
 
 
 STOCK_LIST_FILE = "stock_list.csv"
+ETF_LIST_FILE = "etf_list.csv"
 
 
-def load_stock_list():
+def load_codes(filename):
+
+    if not os.path.exists(filename):
+        raise FileNotFoundError(
+            f"找不到 {filename}"
+        )
 
     df = pd.read_csv(
-        STOCK_LIST_FILE,
+        filename,
         dtype={"code": str}
     )
 
-    return df["code"].tolist()
+    return df["code"].str.zfill(6).tolist()
 
 
-STOCKS = load_stock_list()
+def get_yahoo_symbol(code, asset_type):
+
+    # A股股票
+    if asset_type == "stock":
+
+        if code.startswith(("6", "68")):
+            return f"{code}.SS"
+
+        if code.startswith(("0", "3")):
+            return f"{code}.SZ"
+
+    # ETF
+    elif asset_type == "etf":
+
+        if code.startswith("5"):
+            return f"{code}.SS"
+
+        if code.startswith("1"):
+            return f"{code}.SZ"
+
+    raise ValueError(
+        f"无法判断市场：{asset_type} {code}"
+    )
 
 
-def get_yahoo_symbol(code):
+def fetch_stock(code, asset_type):
 
-    if code.startswith(("6", "68")):
-        return f"{code}.SS"
-
-    if code.startswith(("0", "3")):
-        return f"{code}.SZ"
-
-    raise ValueError(f"不支持的股票代码：{code}")
-
-
-def fetch_stock(code):
-
-    symbol = get_yahoo_symbol(code)
+    symbol = get_yahoo_symbol(
+        code,
+        asset_type
+    )
 
     url = (
         f"https://query1.finance.yahoo.com/"
@@ -50,7 +71,10 @@ def fetch_stock(code):
         "User-Agent": "Mozilla/5.0"
     }
 
-    print(f"正在获取 {code} ({symbol}) ...")
+    print(
+        f"正在获取 {asset_type} "
+        f"{code} ({symbol}) ..."
+    )
 
     response = requests.get(
         url,
@@ -59,32 +83,42 @@ def fetch_stock(code):
         timeout=30,
     )
 
-    print("HTTP状态码:", response.status_code)
+    print(
+        "HTTP状态码:",
+        response.status_code
+    )
 
     response.raise_for_status()
 
     data = response.json()
 
-    if not data.get("chart"):
-        raise RuntimeError(
-            "Yahoo Finance 返回数据异常"
-        )
-
-    result = data["chart"]["result"]
+    result = data.get(
+        "chart",
+        {}
+    ).get(
+        "result"
+    )
 
     if not result:
         raise RuntimeError(
-            f"没有找到 {symbol} 的行情数据"
+            f"{symbol} 没有返回行情数据"
         )
 
     result = result[0]
 
-    timestamps = result.get("timestamp")
-    quote = result["indicators"]["quote"][0]
+    timestamps = result.get(
+        "timestamp"
+    )
+
+    quote = (
+        result
+        .get("indicators", {})
+        .get("quote", [{}])[0]
+    )
 
     if not timestamps:
         raise RuntimeError(
-            "没有返回历史交易日期"
+            "没有返回历史日期"
         )
 
     df = pd.DataFrame({
@@ -93,15 +127,15 @@ def fetch_stock(code):
             unit="s"
         ).date,
 
-        "开盘": quote["open"],
+        "开盘": quote.get("open"),
 
-        "最高": quote["high"],
+        "最高": quote.get("high"),
 
-        "最低": quote["low"],
+        "最低": quote.get("low"),
 
-        "收盘": quote["close"],
+        "收盘": quote.get("close"),
 
-        "成交量": quote["volume"],
+        "成交量": quote.get("volume"),
     })
 
     df["日期"] = pd.to_datetime(
@@ -139,8 +173,9 @@ def fetch_stock(code):
     )
 
     if len(df) < 30:
+
         raise RuntimeError(
-            f"获取到的数据太少：{len(df)} 条"
+            f"数据太少：{len(df)} 条"
         )
 
     os.makedirs(
@@ -148,7 +183,9 @@ def fetch_stock(code):
         exist_ok=True
     )
 
-    filename = f"data/{code}.csv"
+    filename = (
+        f"data/{asset_type}_{code}.csv"
+    )
 
     df.to_csv(
         filename,
@@ -157,8 +194,8 @@ def fetch_stock(code):
     )
 
     print(
-        f"✅ {code} 获取成功："
-        f"{len(df)} 条"
+        f"✅ {asset_type} {code} "
+        f"成功：{len(df)}条"
     )
 
     print(
@@ -167,13 +204,94 @@ def fetch_stock(code):
     )
 
     print(
-        "最新收盘价：",
+        "最新收盘：",
         df.iloc[-1]["收盘"]
     )
 
 
+def run():
+
+    stocks = load_codes(
+        STOCK_LIST_FILE
+    )
+
+    etfs = load_codes(
+        ETF_LIST_FILE
+    )
+
+    print(
+        f"股票数量：{len(stocks)}"
+    )
+
+    print(
+        f"ETF数量：{len(etfs)}"
+    )
+
+    success = 0
+    failed = 0
+
+    # =========================
+    # 股票
+    # =========================
+
+    for code in stocks:
+
+        try:
+
+            fetch_stock(
+                code,
+                "stock"
+            )
+
+            success += 1
+
+        except Exception as e:
+
+            failed += 1
+
+            print(
+                f"❌ 股票 {code} 失败：{e}"
+            )
+
+        time.sleep(2)
+
+    # =========================
+    # ETF
+    # =========================
+
+    for code in etfs:
+
+        try:
+
+            fetch_stock(
+                code,
+                "etf"
+            )
+
+            success += 1
+
+        except Exception as e:
+
+            failed += 1
+
+            print(
+                f"❌ ETF {code} 失败：{e}"
+            )
+
+        time.sleep(2)
+
+    print("")
+    print("========================")
+    print("数据更新完成")
+    print(
+        f"成功：{success}"
+    )
+    print(
+        f"失败：{failed}"
+    )
+    print("========================")
+
+
 if __name__ == "__main__":
 
-    for code in STOCKS:
-
-        fetch_stock(code)
+    run()
