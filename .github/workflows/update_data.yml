@@ -45,6 +45,6 @@ jobs:
           git add data/
 
           git diff --cached --quiet || \
-            git commit -m "Update A-share market data"
+            git commit -m "Update A-share and ETF data"
 
           git push
