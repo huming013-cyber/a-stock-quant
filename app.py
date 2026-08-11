@@ -8,24 +8,24 @@ import os
 # =========================================================
 
 st.set_page_config(
-    page_title="A股量化选股助手 V3.1",
+    page_title="A股量化选股助手 V4.0",
     page_icon="📈",
     layout="wide"
 )
 
 st.title("📈 A股量化选股助手")
-st.caption("V3.1 · 中文名称 · 综合评分 0-100 · 自动排名 · Top 10")
+st.caption("V4.0 · 网页股票池管理 · 中文名称 · 综合评分 0-100")
 
 
 # =========================================================
-# 股票列表文件
+# 文件
 # =========================================================
 
 STOCK_LIST_FILE = "stock_list.csv"
 
 
 # =========================================================
-# 读取股票列表 + 中文名称
+# 读取股票池
 # =========================================================
 
 @st.cache_data
@@ -33,8 +33,8 @@ def load_stock_list():
 
     if not os.path.exists(STOCK_LIST_FILE):
 
-        raise FileNotFoundError(
-            f"找不到 {STOCK_LIST_FILE}"
+        return pd.DataFrame(
+            columns=["code", "name"]
         )
 
     df = pd.read_csv(
@@ -43,23 +43,15 @@ def load_stock_list():
         encoding="utf-8-sig"
     )
 
-    # 检查 code
-
     if "code" not in df.columns:
 
         raise ValueError(
-            "stock_list.csv 中没有找到 code 列"
+            "stock_list.csv 缺少 code 列"
         )
-
-    # 检查 name
 
     if "name" not in df.columns:
 
-        raise ValueError(
-            "stock_list.csv 中没有找到 name 列"
-        )
-
-    # 股票代码统一为6位
+        df["name"] = "未知股票"
 
     df["code"] = (
         df["code"]
@@ -68,7 +60,41 @@ def load_stock_list():
         .str.zfill(6)
     )
 
-    # 股票名称
+    df["name"] = (
+        df["name"]
+        .fillna("未知股票")
+        .astype(str)
+        .str.strip()
+    )
+
+    df = df[
+        [
+            "code",
+            "name"
+        ]
+    ]
+
+    df = df.drop_duplicates(
+        subset=["code"]
+    )
+
+    return df
+
+
+# =========================================================
+# 保存股票池
+# =========================================================
+
+def save_stock_list(df):
+
+    df = df.copy()
+
+    df["code"] = (
+        df["code"]
+        .astype(str)
+        .str.strip()
+        .str.zfill(6)
+    )
 
     df["name"] = (
         df["name"]
@@ -77,22 +103,184 @@ def load_stock_list():
         .str.strip()
     )
 
-    # 删除重复股票
-
     df = df.drop_duplicates(
         subset=["code"]
     )
 
-    return df[
-        [
-            "code",
-            "name"
-        ]
-    ]
+    df.to_csv(
+        STOCK_LIST_FILE,
+        index=False,
+        encoding="utf-8-sig"
+    )
+
+    st.cache_data.clear()
 
 
 # =========================================================
-# 读取行情数据
+# 初始化 Session
+# =========================================================
+
+if "stock_pool" not in st.session_state:
+
+    st.session_state.stock_pool = (
+        load_stock_list()
+    )
+
+
+# =========================================================
+# 股票池管理
+# =========================================================
+
+st.subheader(
+    "📋 股票池管理"
+)
+
+st.write(
+    "在这里直接修改股票代码和名称，然后点击保存。"
+)
+
+
+edited_pool = st.data_editor(
+    st.session_state.stock_pool,
+    num_rows="dynamic",
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "code": st.column_config.TextColumn(
+            "股票代码",
+            help="请输入6位股票代码",
+            max_chars=6
+        ),
+        "name": st.column_config.TextColumn(
+            "股票名称",
+            help="请输入股票中文名称"
+        )
+    }
+)
+
+
+col1, col2, col3 = st.columns(3)
+
+
+with col1:
+
+    if st.button(
+        "💾 保存股票池",
+        type="primary",
+        use_container_width=True
+    ):
+
+        # 清理数据
+
+        edited_pool = edited_pool.copy()
+
+        edited_pool["code"] = (
+            edited_pool["code"]
+            .astype(str)
+            .str.strip()
+            .str.zfill(6)
+        )
+
+        edited_pool["name"] = (
+            edited_pool["name"]
+            .fillna("未知股票")
+            .astype(str)
+            .str.strip()
+        )
+
+        # 检查代码
+
+        invalid = edited_pool[
+            ~edited_pool["code"].str.match(
+                r"^\d{6}$"
+            )
+        ]
+
+        if not invalid.empty:
+
+            st.error(
+                "❌ 股票代码必须是6位数字。"
+            )
+
+        else:
+
+            edited_pool = edited_pool.drop_duplicates(
+                subset=["code"]
+            )
+
+            save_stock_list(
+                edited_pool
+            )
+
+            st.session_state.stock_pool = (
+                edited_pool
+            )
+
+            st.success(
+                f"✅ 股票池已保存，共 "
+                f"{len(edited_pool)} 只股票。"
+            )
+
+            st.rerun()
+
+
+with col2:
+
+    if st.button(
+        "🔄 重新读取股票池",
+        use_container_width=True
+    ):
+
+        st.session_state.stock_pool = (
+            load_stock_list()
+        )
+
+        st.rerun()
+
+
+with col3:
+
+    if st.button(
+        "🗑️ 清空股票池",
+        use_container_width=True
+    ):
+
+        st.session_state.stock_pool = pd.DataFrame(
+            columns=[
+                "code",
+                "name"
+            ]
+        )
+
+        st.rerun()
+
+
+# =========================================================
+# 当前股票池
+# =========================================================
+
+STOCK_LIST = st.session_state.stock_pool.copy()
+
+STOCKS = (
+    STOCK_LIST["code"]
+    .tolist()
+)
+
+STOCK_NAMES = dict(
+    zip(
+        STOCK_LIST["code"],
+        STOCK_LIST["name"]
+    )
+)
+
+
+st.info(
+    f"📊 当前股票池：{len(STOCKS)} 只股票"
+)
+
+
+# =========================================================
+# 行情数据
 # =========================================================
 
 @st.cache_data
@@ -119,8 +307,6 @@ def load_stock_data(code):
 
         return None
 
-    # 必须有日期和收盘
-
     if "日期" not in df.columns:
 
         return None
@@ -129,18 +315,10 @@ def load_stock_data(code):
 
         return None
 
-    # =====================================================
-    # 日期
-    # =====================================================
-
     df["日期"] = pd.to_datetime(
         df["日期"],
         errors="coerce"
     )
-
-    # =====================================================
-    # 数值
-    # =====================================================
 
     number_columns = [
         "开盘",
@@ -159,16 +337,12 @@ def load_stock_data(code):
                 errors="coerce"
             )
 
-    # 删除无效数据
-
     df = df.dropna(
         subset=[
             "日期",
             "收盘"
         ]
     )
-
-    # 按日期排序
 
     df = df.sort_values(
         "日期"
@@ -177,8 +351,6 @@ def load_stock_data(code):
     df = df.reset_index(
         drop=True
     )
-
-    # 至少需要30个交易日
 
     if len(df) < 30:
 
@@ -283,7 +455,6 @@ def load_stock_data(code):
     else:
 
         df["VOL5"] = 0
-
         df["VOL20"] = 0
 
     # =====================================================
@@ -303,7 +474,7 @@ def load_stock_data(code):
     )
 
     # =====================================================
-    # 20日波动率
+    # 波动率
     # =====================================================
 
     df["VOLATILITY20"] = (
@@ -316,55 +487,7 @@ def load_stock_data(code):
 
 
 # =========================================================
-# 读取股票池
-# =========================================================
-
-try:
-
-    STOCK_LIST = load_stock_list()
-
-except Exception as e:
-
-    st.error(
-        "股票列表读取失败"
-    )
-
-    st.code(
-        str(e)
-    )
-
-    st.stop()
-
-
-# 股票代码
-
-STOCKS = (
-    STOCK_LIST["code"]
-    .tolist()
-)
-
-
-# 股票名称字典
-
-STOCK_NAMES = dict(
-    zip(
-        STOCK_LIST["code"],
-        STOCK_LIST["name"]
-    )
-)
-
-
-# =========================================================
-# 股票数量
-# =========================================================
-
-st.info(
-    f"📋 当前股票池：{len(STOCKS)} 只股票"
-)
-
-
-# =========================================================
-# 单只股票量化
+# 单只股票评分
 # =========================================================
 
 def analyze_stock(code):
@@ -378,38 +501,30 @@ def analyze_stock(code):
     latest = df.iloc[-1]
 
     price = latest["收盘"]
-
     change = latest["涨跌幅"]
 
     ma5 = latest["MA5"]
-
     ma10 = latest["MA10"]
-
     ma20 = latest["MA20"]
-
     ma60 = latest["MA60"]
 
     dif = latest["DIF"]
-
     dea = latest["DEA"]
 
     volume = latest["成交量"]
-
     volume20 = latest["VOL20"]
 
     return5 = latest["RETURN5"]
-
     return20 = latest["RETURN20"]
 
     volatility = latest["VOLATILITY20"]
 
 
     # =====================================================
-    # 1. 趋势评分 30分
+    # 趋势 30分
     # =====================================================
 
     trend_score = 0
-
 
     if pd.notna(ma5) and pd.notna(ma20):
 
@@ -417,13 +532,11 @@ def analyze_stock(code):
 
             trend_score += 10
 
-
     if pd.notna(ma10) and pd.notna(ma20):
 
         if ma10 > ma20:
 
             trend_score += 10
-
 
     if pd.notna(price) and pd.notna(ma60):
 
@@ -433,11 +546,10 @@ def analyze_stock(code):
 
 
     # =====================================================
-    # 2. MACD评分 25分
+    # MACD 25分
     # =====================================================
 
     macd_score = 0
-
 
     if pd.notna(dif) and pd.notna(dea):
 
@@ -451,11 +563,10 @@ def analyze_stock(code):
 
 
     # =====================================================
-    # 3. 成交量评分 15分
+    # 成交量 15分
     # =====================================================
 
     volume_score = 0
-
 
     if (
         pd.notna(volume)
@@ -468,18 +579,16 @@ def analyze_stock(code):
 
 
     # =====================================================
-    # 4. 动量评分 20分
+    # 动量 20分
     # =====================================================
 
     momentum_score = 0
-
 
     if pd.notna(return5):
 
         if return5 > 0:
 
             momentum_score += 10
-
 
     if pd.notna(return20):
 
@@ -489,11 +598,10 @@ def analyze_stock(code):
 
 
     # =====================================================
-    # 5. 稳定性评分 10分
+    # 稳定性 10分
     # =====================================================
 
     stability_score = 0
-
 
     if pd.notna(volatility):
 
@@ -548,10 +656,6 @@ def analyze_stock(code):
         signal = "🔴 偏弱"
 
 
-    # =====================================================
-    # 返回结果
-    # =====================================================
-
     return {
 
         "股票名称": STOCK_NAMES.get(
@@ -602,6 +706,8 @@ def analyze_stock(code):
 # 一键量化
 # =========================================================
 
+st.divider()
+
 st.subheader(
     "🚀 一键量化"
 )
@@ -612,6 +718,15 @@ if st.button(
     type="primary",
     use_container_width=True
 ):
+
+    if not STOCKS:
+
+        st.error(
+            "❌ 股票池为空，请先添加股票。"
+        )
+
+        st.stop()
+
 
     results = []
 
@@ -627,10 +742,10 @@ if st.button(
     for i, code in enumerate(STOCKS):
 
         status.write(
-            f"正在量化："
+            f"正在分析："
             f"{STOCK_NAMES.get(code, '未知股票')} "
             f"({code}) "
-            f"（{i + 1} / {total}）"
+            f"— {i + 1}/{total}"
         )
 
 
@@ -670,7 +785,7 @@ if st.button(
 
 
     # =====================================================
-    # 有结果
+    # 量化结果
     # =====================================================
 
     if results:
@@ -679,8 +794,6 @@ if st.button(
             results
         )
 
-
-        # 按综合评分 + 20日涨幅排序
 
         result_df = result_df.sort_values(
             by=[
@@ -698,10 +811,6 @@ if st.button(
             drop=True
         )
 
-
-        # =================================================
-        # 排名
-        # =================================================
 
         result_df.insert(
             0,
@@ -746,26 +855,6 @@ if st.button(
             use_container_width=True,
             hide_index=True
         )
-
-
-        # =================================================
-        # Top 10 简洁展示
-        # =================================================
-
-        st.subheader(
-            "⭐ Top 10"
-        )
-
-
-        for _, row in top10.iterrows():
-
-            st.write(
-                f"**#{int(row['排名'])} "
-                f"{row['股票名称']} "
-                f"({row['代码']})** · "
-                f"综合评分 **{row['综合评分']:.0f}** · "
-                f"{row['信号']}"
-            )
 
 
         # =================================================
@@ -859,7 +948,7 @@ if st.button(
 
 
         # =================================================
-        # 下载结果
+        # 下载
         # =================================================
 
         csv = result_df.to_csv(
@@ -871,14 +960,14 @@ if st.button(
         st.download_button(
             "⬇️ 下载完整量化结果",
             data=csv,
-            file_name="quant_result_v3_1.csv",
+            file_name="quant_result_v4.csv",
             mime="text/csv",
             use_container_width=True
         )
 
 
         # =================================================
-        # 无行情数据
+        # 失败列表
         # =================================================
 
         if failed:
@@ -887,8 +976,13 @@ if st.button(
                 "⚠️ 没有行情数据的股票"
             ):
 
+                failed_names = [
+                    f"{STOCK_NAMES.get(code, '未知股票')} ({code})"
+                    for code in failed
+                ]
+
                 st.write(
-                    failed
+                    failed_names
                 )
 
 
@@ -899,12 +993,12 @@ if st.button(
         )
 
         st.info(
-            "请检查 GitHub 的 data/ 文件夹中是否存在行情 CSV。"
+            "请确认 data/ 文件夹中存在对应股票的 CSV 行情文件。"
         )
 
 
 # =========================================================
-# 单只股票详细分析
+# 单只股票分析
 # =========================================================
 
 st.divider()
@@ -915,7 +1009,7 @@ st.subheader(
 
 
 stock_code = st.text_input(
-    "输入6位A股代码",
+    "请输入6位股票代码",
     value="600900"
 ).strip()
 
@@ -947,6 +1041,10 @@ if st.button(
             f"没有找到 {stock_code} 的行情数据。"
         )
 
+        st.info(
+            f"请确认 data/{stock_code}.csv 是否存在。"
+        )
+
         st.stop()
 
 
@@ -960,8 +1058,7 @@ if st.button(
 
 
     st.success(
-        f"{stock_name} "
-        f"({stock_code}) · "
+        f"{stock_name} ({stock_code}) · "
         f"数据日期："
         f"{latest['日期'].strftime('%Y-%m-%d')}"
     )
@@ -1000,7 +1097,7 @@ if st.button(
 
 
     # =====================================================
-    # 均线趋势
+    # 均线
     # =====================================================
 
     st.subheader(
@@ -1127,7 +1224,7 @@ if st.button(
 
 
     # =====================================================
-    # 收盘价 + 均线
+    # K线趋势替代图
     # =====================================================
 
     st.subheader(
@@ -1155,7 +1252,7 @@ if st.button(
 
 
     # =====================================================
-    # MACD走势
+    # MACD图
     # =====================================================
 
     st.subheader(
