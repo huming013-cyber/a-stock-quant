@@ -61,8 +61,8 @@ def fetch_stock(code, asset_type):
     )
 
     params = {
-        "range": "2y",
-        "interval": "1d",
+        "range": "10y",
+        " interval": "1d",
         "events": "history",
         "includeAdjustedClose": "true",
     }
