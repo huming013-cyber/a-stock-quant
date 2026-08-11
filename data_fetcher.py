@@ -3,9 +3,20 @@ import requests
 import pandas as pd
 
 
-STOCKS = [
-    "600900",
-]
+STOCK_LIST_FILE = "stock_list.csv"
+
+
+def load_stock_list():
+
+    df = pd.read_csv(
+        STOCK_LIST_FILE,
+        dtype={"code": str}
+    )
+
+    return df["code"].tolist()
+
+
+STOCKS = load_stock_list()
 
 
 def get_yahoo_symbol(code):
