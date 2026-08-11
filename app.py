@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-import itertools
+from itertools import product
 
 
 # =========================================================
@@ -10,15 +10,16 @@ import itertools
 # =========================================================
 
 st.set_page_config(
-    page_title="A股量化选股助手 V5.3",
+    page_title="A股量化选股助手 V5.4",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 A股量化选股助手")
+st.title("📈 A股量化选股助手 V5.4")
+
 st.caption(
-    "V5.3 · 中文名称 · MA · MACD · 动量 · 成交量 · 突破 · "
-    "自动优化 · Walk-Forward · 回测"
+    "V5.4 · 中文名称 · 多因子评分 · 自动优化 · "
+    "Walk-Forward · 样本外回测 · 加速版"
 )
 
 
@@ -30,171 +31,97 @@ STOCK_LIST_FILE = "stock_list.csv"
 
 
 # =========================================================
-# 安全取值
-# =========================================================
-
-def value(row, column, default=np.nan):
-
-    try:
-
-        if column not in row.index:
-            return default
-
-        v = row[column]
-
-        if pd.isna(v):
-            return default
-
-        return float(v)
-
-    except Exception:
-
-        return default
-
-
-# =========================================================
-# 股票名称
-# =========================================================
-
-@st.cache_data
-def load_stock_names():
-
-    names = {}
-
-    if not os.path.exists(STOCK_LIST_FILE):
-
-        return names
-
-    try:
-
-        stock_list = pd.read_csv(
-            STOCK_LIST_FILE,
-            dtype={"code": str}
-        )
-
-        stock_list["code"] = (
-            stock_list["code"]
-            .astype(str)
-            .str.extract(r"(\d{6})")[0]
-        )
-
-        name_column = None
-
-        for column in [
-            "name",
-            "名称",
-            "股票名称",
-            "stock_name"
-        ]:
-
-            if column in stock_list.columns:
-
-                name_column = column
-                break
-
-        if name_column is None:
-
-            return names
-
-        for _, row in stock_list.iterrows():
-
-            code = str(
-                row["code"]
-            ).zfill(6)
-
-            name = str(
-                row[name_column]
-            )
-
-            if (
-                code != "nan"
-                and name != "nan"
-            ):
-
-                names[code] = name
-
-    except Exception:
-
-        pass
-
-    return names
-
-
-STOCK_NAMES = load_stock_names()
-
-
-# =========================================================
-# 股票代码
+# 股票列表
 # =========================================================
 
 @st.cache_data
 def load_stock_list():
 
-    if not os.path.exists(
-        STOCK_LIST_FILE
-    ):
-
-        return []
-
-    try:
-
-        df = pd.read_csv(
-            STOCK_LIST_FILE,
-            dtype={"code": str}
+    if not os.path.exists(STOCK_LIST_FILE):
+        return pd.DataFrame(
+            columns=["code", "name"]
         )
 
-        if "code" not in df.columns:
+    df = pd.read_csv(
+        STOCK_LIST_FILE,
+        dtype={"code": str}
+    )
 
-            return []
-
-        codes = (
-            df["code"]
-            .astype(str)
-            .str.extract(r"(\d{6})")[0]
-            .dropna()
-            .tolist()
+    if "code" not in df.columns:
+        raise ValueError(
+            "stock_list.csv 必须包含 code 列"
         )
 
-        return list(
-            dict.fromkeys(codes)
-        )
+    df["code"] = (
+        df["code"]
+        .astype(str)
+        .str.extract(r"(\d{6})")[0]
+    )
 
-    except Exception:
+    if "name" not in df.columns:
 
-        return []
+        if "名称" in df.columns:
+            df["name"] = df["名称"]
+
+        elif "股票名称" in df.columns:
+            df["name"] = df["股票名称"]
+
+        else:
+            df["name"] = "未知股票"
+
+    df["name"] = (
+        df["name"]
+        .fillna("未知股票")
+        .astype(str)
+    )
+
+    df = df.dropna(
+        subset=["code"]
+    )
+
+    df = df.drop_duplicates(
+        subset=["code"]
+    )
+
+    return df[
+        ["code", "name"]
+    ].reset_index(drop=True)
 
 
-STOCKS = load_stock_list()
+stock_list = load_stock_list()
+
+STOCK_NAMES = dict(
+    zip(
+        stock_list["code"],
+        stock_list["name"]
+    )
+)
+
+ALL_STOCKS = stock_list[
+    "code"
+].tolist()
 
 
 # =========================================================
-# 读取行情
+# 行情读取
 # =========================================================
 
 @st.cache_data
 def load_stock_data(code):
 
-    filename = (
-        f"data/{code}.csv"
-    )
+    filename = f"data/{code}.csv"
 
     if not os.path.exists(filename):
 
         raise FileNotFoundError(
-            f"没有找到 {code} 的行情文件"
+            f"没有找到 {code}.csv"
         )
 
     df = pd.read_csv(
         filename
     )
 
-    if df.empty:
-
-        raise ValueError(
-            "行情数据为空"
-        )
-
-    required_columns = [
+    required = [
         "日期",
         "开盘",
         "收盘",
@@ -204,25 +131,21 @@ def load_stock_data(code):
     ]
 
     missing = [
-        c
-        for c in required_columns
-        if c not in df.columns
+        x
+        for x in required
+        if x not in df.columns
     ]
 
     if missing:
 
         raise ValueError(
-            f"缺少字段：{missing}"
+            f"{code}.csv 缺少字段：{missing}"
         )
-
-    # 日期
 
     df["日期"] = pd.to_datetime(
         df["日期"],
         errors="coerce"
     )
-
-    # 数字
 
     for column in [
         "开盘",
@@ -248,51 +171,81 @@ def load_stock_data(code):
         "日期"
     )
 
+    df = df.drop_duplicates(
+        subset=["日期"]
+    )
+
     df = df.reset_index(
         drop=True
     )
 
-    # =====================================================
-    # 涨跌幅
-    # =====================================================
+    return df
+
+
+# =========================================================
+# 技术指标
+# =========================================================
+
+@st.cache_data
+def calculate_indicators(df):
+
+    df = df.copy()
+
+    close = df["收盘"]
+
+    volume = df["成交量"]
+
+    # -----------------------------------------------------
+    # 收益率
+    # -----------------------------------------------------
 
     df["涨跌幅"] = (
-        df["收盘"]
-        .pct_change()
+        close.pct_change()
         * 100
     )
 
-    # =====================================================
+    df["RETURN5"] = (
+        close.pct_change(5)
+        * 100
+    )
+
+    df["RETURN20"] = (
+        close.pct_change(20)
+        * 100
+    )
+
+    df["RETURN60"] = (
+        close.pct_change(60)
+        * 100
+    )
+
+    # -----------------------------------------------------
     # MA
-    # =====================================================
+    # -----------------------------------------------------
 
     df["MA5"] = (
-        df["收盘"]
+        close
         .rolling(5)
         .mean()
     )
 
     df["MA10"] = (
-        df["收盘"]
+        close
         .rolling(10)
         .mean()
     )
 
     df["MA20"] = (
-        df["收盘"]
+        close
         .rolling(20)
         .mean()
     )
 
     df["MA60"] = (
-        df["收盘"]
+        close
         .rolling(60)
         .mean()
     )
-
-    # =====================================================
-    # MA趋势
-    # =====================================================
 
     df["MA20_SLOPE"] = (
         df["MA20"]
@@ -306,12 +259,12 @@ def load_stock_data(code):
         * 100
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # MACD
-    # =====================================================
+    # -----------------------------------------------------
 
     ema12 = (
-        df["收盘"]
+        close
         .ewm(
             span=12,
             adjust=False
@@ -320,7 +273,7 @@ def load_stock_data(code):
     )
 
     ema26 = (
-        df["收盘"]
+        close
         .ewm(
             span=26,
             adjust=False
@@ -347,56 +300,33 @@ def load_stock_data(code):
     ) * 2
 
     df["MACD_CHANGE"] = (
-        df["MACD"]
-        .diff()
+        df["MACD"].diff()
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # 成交量
-    # =====================================================
+    # -----------------------------------------------------
 
     df["VOL5"] = (
-        df["成交量"]
+        volume
         .rolling(5)
         .mean()
     )
 
     df["VOL20"] = (
-        df["成交量"]
+        volume
         .rolling(20)
         .mean()
     )
 
     df["VOL_RATIO"] = (
-        df["成交量"]
+        volume
         / df["VOL20"]
     )
 
-    # =====================================================
-    # 动量
-    # =====================================================
-
-    df["RETURN5"] = (
-        df["收盘"]
-        .pct_change(5)
-        * 100
-    )
-
-    df["RETURN20"] = (
-        df["收盘"]
-        .pct_change(20)
-        * 100
-    )
-
-    df["RETURN60"] = (
-        df["收盘"]
-        .pct_change(60)
-        * 100
-    )
-
-    # =====================================================
-    # 20日最高价
-    # =====================================================
+    # -----------------------------------------------------
+    # 突破
+    # -----------------------------------------------------
 
     df["HIGH20"] = (
         df["最高"]
@@ -406,14 +336,14 @@ def load_stock_data(code):
     )
 
     df["DIST_HIGH20"] = (
-        df["收盘"]
+        close
         / df["HIGH20"]
         - 1
     ) * 100
 
-    # =====================================================
+    # -----------------------------------------------------
     # 波动率
-    # =====================================================
+    # -----------------------------------------------------
 
     df["VOLATILITY20"] = (
         df["涨跌幅"]
@@ -421,13 +351,12 @@ def load_stock_data(code):
         .std()
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # ATR
-    # =====================================================
+    # -----------------------------------------------------
 
     previous_close = (
-        df["收盘"]
-        .shift(1)
+        close.shift(1)
     )
 
     tr1 = (
@@ -452,9 +381,7 @@ def load_stock_data(code):
             tr3
         ],
         axis=1
-    ).max(
-        axis=1
-    )
+    ).max(axis=1)
 
     df["ATR14"] = (
         true_range
@@ -464,7 +391,7 @@ def load_stock_data(code):
 
     df["ATR_PERCENT"] = (
         df["ATR14"]
-        / df["收盘"]
+        / close
         * 100
     )
 
@@ -472,359 +399,287 @@ def load_stock_data(code):
 
 
 # =========================================================
-# 因子计算
+# 向量化因子
 # =========================================================
 
-def calculate_factors(
-    df,
-    i
-):
+def create_factor_scores(df):
 
-    if i < 60:
-
-        return None
-
-    row = df.iloc[i]
-
-    price = value(
-        row,
-        "收盘"
+    result = pd.DataFrame(
+        index=df.index
     )
 
-    ma5 = value(
-        row,
-        "MA5"
+    # -----------------------------------------------------
+    # 趋势
+    # -----------------------------------------------------
+
+    trend = np.zeros(
+        len(df)
     )
 
-    ma20 = value(
-        row,
-        "MA20"
-    )
-
-    ma60 = value(
-        row,
-        "MA60"
-    )
-
-    ma20_slope = value(
-        row,
-        "MA20_SLOPE"
-    )
-
-    ma60_slope = value(
-        row,
-        "MA60_SLOPE"
-    )
-
-    dif = value(
-        row,
-        "DIF"
-    )
-
-    dea = value(
-        row,
-        "DEA"
-    )
-
-    macd_change = value(
-        row,
-        "MACD_CHANGE"
-    )
-
-    volume = value(
-        row,
-        "成交量"
-    )
-
-    volume20 = value(
-        row,
-        "VOL20"
-    )
-
-    volume_ratio = value(
-        row,
-        "VOL_RATIO"
-    )
-
-    return5 = value(
-        row,
-        "RETURN5"
-    )
-
-    return20 = value(
-        row,
-        "RETURN20"
-    )
-
-    return60 = value(
-        row,
-        "RETURN60"
-    )
-
-    high20 = value(
-        row,
-        "HIGH20"
-    )
-
-    dist_high20 = value(
-        row,
-        "DIST_HIGH20"
-    )
-
-    volatility = value(
-        row,
-        "VOLATILITY20"
-    )
-
-    atr_percent = value(
-        row,
-        "ATR_PERCENT"
-    )
-
-    change = value(
-        row,
-        "涨跌幅",
+    trend += np.where(
+        df["MA5"] > df["MA20"],
+        7,
         0
     )
 
-    # =====================================================
-    # 趋势 0-25
-    # =====================================================
+    trend += np.where(
+        df["MA20"] > df["MA60"],
+        7,
+        0
+    )
 
-    trend = 0
+    trend += np.where(
+        df["收盘"] > df["MA60"],
+        5,
+        0
+    )
 
-    if (
-        pd.notna(ma5)
-        and pd.notna(ma20)
-        and ma5 > ma20
-    ):
+    trend += np.where(
+        df["MA20_SLOPE"] > 0,
+        3,
+        0
+    )
 
-        trend += 7
+    trend += np.where(
+        df["MA60_SLOPE"] > 0,
+        3,
+        0
+    )
 
-    if (
-        pd.notna(ma20)
-        and pd.notna(ma60)
-        and ma20 > ma60
-    ):
+    result["trend"] = trend
 
-        trend += 7
+    # -----------------------------------------------------
+    # 动量
+    # -----------------------------------------------------
 
-    if (
-        pd.notna(price)
-        and pd.notna(ma60)
-        and price > ma60
-    ):
+    momentum = np.zeros(
+        len(df)
+    )
 
-        trend += 5
+    momentum += np.where(
+        df["RETURN5"] > 0,
+        5,
+        0
+    )
 
-    if (
-        pd.notna(ma20_slope)
-        and ma20_slope > 0
-    ):
+    momentum += np.where(
+        df["RETURN5"] > 3,
+        2,
+        0
+    )
 
-        trend += 3
+    momentum += np.where(
+        df["RETURN20"] > 0,
+        6,
+        0
+    )
 
-    if (
-        pd.notna(ma60_slope)
-        and ma60_slope > 0
-    ):
+    momentum += np.where(
+        df["RETURN20"] > 5,
+        2,
+        0
+    )
 
-        trend += 3
+    momentum += np.where(
+        df["RETURN60"] > 0,
+        5,
+        0
+    )
 
-    # =====================================================
-    # 动量 0-20
-    # =====================================================
-
-    momentum = 0
-
-    if pd.notna(return5):
-
-        if return5 > 0:
-            momentum += 5
-
-        if return5 > 3:
-            momentum += 2
-
-    if pd.notna(return20):
-
-        if return20 > 0:
-            momentum += 6
-
-        if return20 > 5:
-            momentum += 2
-
-    if pd.notna(return60):
-
-        if return60 > 0:
-            momentum += 5
-
-    momentum = min(
+    result["momentum"] = np.minimum(
         momentum,
         20
     )
 
-    # =====================================================
-    # MACD 0-15
-    # =====================================================
+    # -----------------------------------------------------
+    # MACD
+    # -----------------------------------------------------
 
-    macd_score = 0
+    macd = np.zeros(
+        len(df)
+    )
 
-    if (
-        pd.notna(dif)
-        and pd.notna(dea)
-    ):
+    macd += np.where(
+        df["DIF"] > df["DEA"],
+        7,
+        0
+    )
 
-        if dif > dea:
-            macd_score += 7
+    macd += np.where(
+        df["DIF"] > 0,
+        5,
+        0
+    )
 
-        if dif > 0:
-            macd_score += 5
+    macd += np.where(
+        df["MACD_CHANGE"] > 0,
+        3,
+        0
+    )
 
-    if (
-        pd.notna(macd_change)
-        and macd_change > 0
-    ):
-
-        macd_score += 3
-
-    macd_score = min(
-        macd_score,
+    result["macd"] = np.minimum(
+        macd,
         15
     )
 
-    # =====================================================
-    # 成交量 0-15
-    # =====================================================
+    # -----------------------------------------------------
+    # 成交量
+    # -----------------------------------------------------
 
-    volume_score = 0
+    volume_score = np.zeros(
+        len(df)
+    )
 
-    if (
-        pd.notna(volume)
-        and pd.notna(volume20)
-        and volume20 > 0
-    ):
+    volume_score += np.where(
+        df["VOL_RATIO"] > 1,
+        5,
+        0
+    )
 
-        if volume_ratio > 1:
-            volume_score += 5
+    volume_score += np.where(
+        df["VOL_RATIO"] >= 1.2,
+        5,
+        0
+    )
 
-        if volume_ratio >= 1.2:
-            volume_score += 5
+    volume_score += np.where(
+        (
+            (df["涨跌幅"] > 0)
+            &
+            (df["VOL_RATIO"] >= 1.2)
+        ),
+        5,
+        0
+    )
 
-        if (
-            change > 0
-            and volume_ratio >= 1.2
-        ):
-
-            volume_score += 5
-
-    volume_score = min(
+    result["volume"] = np.minimum(
         volume_score,
         15
     )
 
-    # =====================================================
-    # 突破 0-15
-    # =====================================================
+    # -----------------------------------------------------
+    # 突破
+    # -----------------------------------------------------
 
-    breakout = 0
+    breakout = np.zeros(
+        len(df)
+    )
 
-    if (
-        pd.notna(price)
-        and pd.notna(high20)
-        and high20 > 0
-    ):
+    ratio = (
+        df["收盘"]
+        / df["HIGH20"]
+    )
 
-        ratio = (
-            price
-            / high20
-        )
+    breakout += np.where(
+        ratio >= 1,
+        10,
+        0
+    )
 
-        if ratio >= 1:
-            breakout += 10
+    breakout += np.where(
+        (
+            (ratio >= 0.97)
+            &
+            (ratio < 1)
+        ),
+        6,
+        0
+    )
 
-        elif ratio >= 0.97:
-            breakout += 6
+    breakout += np.where(
+        (
+            (ratio >= 0.93)
+            &
+            (ratio < 0.97)
+        ),
+        3,
+        0
+    )
 
-        elif ratio >= 0.93:
-            breakout += 3
+    breakout += np.where(
+        (
+            (breakout >= 10)
+            &
+            (df["VOL_RATIO"] >= 1.2)
+        ),
+        5,
+        0
+    )
 
-    if (
-        breakout >= 10
-        and pd.notna(volume_ratio)
-        and volume_ratio >= 1.2
-    ):
-
-        breakout += 5
-
-    breakout = min(
+    result["breakout"] = np.minimum(
         breakout,
         15
     )
 
-    # =====================================================
-    # 风险 0-20
-    # =====================================================
+    # -----------------------------------------------------
+    # 风险
+    # -----------------------------------------------------
 
-    risk = 0
+    risk = np.zeros(
+        len(df)
+    )
 
-    if pd.notna(volatility):
+    risk += np.where(
+        df["VOLATILITY20"] > 8,
+        8,
+        np.where(
+            df["VOLATILITY20"] > 6,
+            5,
+            np.where(
+                df["VOLATILITY20"] > 4,
+                2,
+                0
+            )
+        )
+    )
 
-        if volatility > 8:
-            risk += 8
+    risk += np.where(
+        df["ATR_PERCENT"] > 7,
+        5,
+        np.where(
+            df["ATR_PERCENT"] > 5,
+            3,
+            0
+        )
+    )
 
-        elif volatility > 6:
-            risk += 5
+    risk += np.where(
+        df["RETURN5"] > 15,
+        6,
+        np.where(
+            df["RETURN5"] > 10,
+            4,
+            np.where(
+                df["RETURN5"] > 7,
+                2,
+                0
+            )
+        )
+    )
 
-        elif volatility > 4:
-            risk += 2
+    risk += np.where(
+        df["DIST_HIGH20"] < -15,
+        5,
+        np.where(
+            df["DIST_HIGH20"] < -10,
+            3,
+            0
+        )
+    )
 
-    if pd.notna(atr_percent):
-
-        if atr_percent > 7:
-            risk += 5
-
-        elif atr_percent > 5:
-            risk += 3
-
-    if pd.notna(return5):
-
-        if return5 > 15:
-            risk += 6
-
-        elif return5 > 10:
-            risk += 4
-
-        elif return5 > 7:
-            risk += 2
-
-    if pd.notna(dist_high20):
-
-        if dist_high20 < -15:
-            risk += 5
-
-        elif dist_high20 < -10:
-            risk += 3
-
-    risk = min(
+    result["risk"] = np.minimum(
         risk,
         20
     )
 
-    return {
-        "trend": trend,
-        "momentum": momentum,
-        "macd": macd_score,
-        "volume": volume_score,
-        "breakout": breakout,
-        "risk": risk
-    }
+    return result
 
 
 # =========================================================
-# 权重评分
+# 计算综合评分
 # =========================================================
 
-def weighted_score(
+def calculate_score(
     factors,
     weights
 ):
@@ -832,231 +687,113 @@ def weighted_score(
     positive = (
 
         factors["trend"]
-        * weights["trend"]
+        * weights[0]
 
         +
 
         factors["momentum"]
-        * weights["momentum"]
+        * weights[1]
 
         +
 
         factors["macd"]
-        * weights["macd"]
+        * weights[2]
 
         +
 
         factors["volume"]
-        * weights["volume"]
+        * weights[3]
 
         +
 
         factors["breakout"]
-        * weights["breakout"]
+        * weights[4]
     )
 
     risk_penalty = (
         factors["risk"]
-        * weights["risk"]
+        * weights[5]
     )
 
-    score = (
+    raw = (
         positive
         - risk_penalty
     )
 
-    # 将不同权重产生的结果压缩到0-100
-    # 方便不同组合比较
+    max_score = (
 
-    raw_max = (
-        25 * weights["trend"]
-        + 20 * weights["momentum"]
-        + 15 * weights["macd"]
-        + 15 * weights["volume"]
-        + 15 * weights["breakout"]
+        25 * weights[0]
+        +
+
+        20 * weights[1]
+        +
+
+        15 * weights[2]
+        +
+
+        15 * weights[3]
+        +
+
+        15 * weights[4]
     )
 
-    if raw_max <= 0:
-        return 0
-
-    normalized = (
-        score
-        / raw_max
+    score = (
+        raw
+        / max_score
         * 100
     )
 
-    return max(
-        0,
-        min(
-            100,
-            normalized
-        )
-    )
+    return score
 
 
 # =========================================================
-# 权重组合
+# 权重候选
 # =========================================================
 
-def generate_weight_sets():
+def create_weight_candidates():
 
-    values = [
-        0.6,
-        0.8,
-        1.0,
-        1.2,
-        1.4
+    candidates = []
+
+    # V5.4 不再生成数万种组合
+    # 使用少量有意义的组合
+
+    presets = [
+
+        (1.2, 1.0, 1.0, 0.8, 1.0, 1.0),
+
+        (1.0, 1.2, 1.0, 0.8, 1.0, 1.0),
+
+        (1.0, 1.0, 1.2, 0.8, 1.0, 1.0),
+
+        (1.0, 1.0, 1.0, 1.2, 1.0, 1.0),
+
+        (1.0, 1.0, 1.0, 1.0, 1.2, 1.0),
+
+        (1.2, 1.2, 1.0, 0.8, 1.0, 1.0),
+
+        (1.2, 1.0, 1.2, 0.8, 1.0, 1.0),
+
+        (1.0, 1.2, 1.2, 1.0, 1.0, 1.0),
+
+        (1.1, 1.1, 1.0, 1.0, 1.1, 1.0),
+
+        (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
     ]
 
-    combinations = itertools.product(
-        values,
-        repeat=5
-    )
+    for p in presets:
 
-    result = []
-
-    for combo in combinations:
-
-        average = (
-            sum(combo)
-            / 5
-        )
-
-        if (
-            0.85
-            <= average
-            <= 1.15
-        ):
-
-            result.append({
-
-                "trend": combo[0],
-
-                "momentum": combo[1],
-
-                "macd": combo[2],
-
-                "volume": combo[3],
-
-                "breakout": combo[4],
-
-                "risk": 1.0
-            })
-
-    return result
-
-
-# =========================================================
-# 建立历史样本
-# =========================================================
-
-def build_samples(
-    holding_days,
-    start_ratio,
-    end_ratio
-):
-
-    samples = []
-
-    total_stocks = len(
-        STOCKS
-    )
-
-    for stock_index, code in enumerate(
-        STOCKS
-    ):
-
-        try:
-
-            df = load_stock_data(
-                code
-            )
-
-        except Exception:
-
-            continue
-
-        total = len(df)
-
-        start = max(
-            60,
-            int(
-                total
-                * start_ratio
+        candidates.append(
+            np.array(
+                p,
+                dtype=float
             )
         )
 
-        end = min(
-            total - holding_days,
-            int(
-                total
-                * end_ratio
-            )
-        )
-
-        if end <= start:
-
-            continue
-
-        for i in range(
-            start,
-            end
-        ):
-
-            factors = calculate_factors(
-                df,
-                i
-            )
-
-            if factors is None:
-                continue
-
-            buy_price = value(
-                df.iloc[i],
-                "收盘"
-            )
-
-            future_price = value(
-                df.iloc[
-                    i + holding_days
-                ],
-                "收盘"
-            )
-
-            if (
-                pd.isna(buy_price)
-                or pd.isna(future_price)
-                or buy_price <= 0
-            ):
-
-                continue
-
-            future_return = (
-                future_price
-                / buy_price
-                - 1
-            ) * 100
-
-            samples.append({
-
-                "代码": code,
-
-                "日期":
-                    df.iloc[i]["日期"],
-
-                "未来收益":
-                    future_return,
-
-                **factors
-            })
-
-    return pd.DataFrame(
-        samples
-    )
+    return candidates
 
 
 # =========================================================
-# 自动寻找最佳权重
+# 自动优化
 # =========================================================
 
 def optimize_weights(
@@ -1068,203 +805,488 @@ def optimize_weights(
 
         return None
 
-    weight_sets = (
-        generate_weight_sets()
-    )
+    best = None
 
-    results = []
-
-    for weights in weight_sets:
-
-        scores = []
-
-        for _, row in samples.iterrows():
-
-            factors = {
-
-                "trend": row["trend"],
-
-                "momentum": row["momentum"],
-
-                "macd": row["macd"],
-
-                "volume": row["volume"],
-
-                "breakout": row["breakout"],
-
-                "risk": row["risk"]
-            }
-
-            scores.append(
-                weighted_score(
-                    factors,
-                    weights
-                )
-            )
-
-        temp = samples.copy()
-
-        temp["评分"] = scores
-
-        selected = temp[
-            temp["评分"] >= 75
+    factor_matrix = samples[
+        [
+            "trend",
+            "momentum",
+            "macd",
+            "volume",
+            "breakout",
+            "risk"
         ]
+    ].values
 
-        if len(selected) < minimum_samples:
-            continue
-
-        returns = (
-            selected["未来收益"]
-        )
-
-        avg_return = returns.mean()
-
-        median_return = returns.median()
-
-        win_rate = (
-            returns > 0
-        ).mean() * 100
-
-        downside = (
-            returns[returns < 0]
-        )
-
-        if len(downside) > 0:
-
-            downside_avg = (
-                downside.mean()
-            )
-
-        else:
-
-            downside_avg = 0
-
-        # 优化目标
-        #
-        # 不单纯追求收益
-        # 同时考虑胜率、中位数以及亏损
-
-        objective = (
-
-            avg_return * 0.45
-
-            + median_return * 0.20
-
-            + win_rate * 0.25
-
-            + downside_avg * 0.10
-        )
-
-        results.append({
-
-            "objective": objective,
-
-            "平均收益": avg_return,
-
-            "中位数收益": median_return,
-
-            "胜率": win_rate,
-
-            "样本数": len(selected),
-
-            "weights": weights
-        })
-
-    if not results:
-
-        return None
-
-    results.sort(
-        key=lambda x:
-            x["objective"],
-        reverse=True
+    future_returns = (
+        samples[
+            "未来收益"
+        ].values
     )
 
-    return {
-        "best": results[0],
-        "all": results
-    }
+    for weights in create_weight_candidates():
 
+        scores = calculate_score(
+            {
+                "trend":
+                    factor_matrix[:, 0],
 
-# =========================================================
-# 单次策略回测
-# =========================================================
+                "momentum":
+                    factor_matrix[:, 1],
 
-def backtest_with_weights(
-    samples,
-    weights,
-    minimum_score=75,
-    fee=0.0003,
-    slippage=0.001
-):
+                "macd":
+                    factor_matrix[:, 2],
 
-    if samples.empty:
+                "volume":
+                    factor_matrix[:, 3],
 
-        return pd.DataFrame()
+                "breakout":
+                    factor_matrix[:, 4],
 
-    records = []
-
-    for _, row in samples.iterrows():
-
-        factors = {
-
-            "trend": row["trend"],
-
-            "momentum": row["momentum"],
-
-            "macd": row["macd"],
-
-            "volume": row["volume"],
-
-            "breakout": row["breakout"],
-
-            "risk": row["risk"]
-        }
-
-        score = weighted_score(
-            factors,
+                "risk":
+                    factor_matrix[:, 5]
+            },
             weights
         )
 
-        if score < minimum_score:
-
-            continue
-
-        raw_return = row[
-            "未来收益"
-        ]
-
-        # 买入+卖出成本
-        total_cost = (
-            fee * 2
-            + slippage * 2
-        ) * 100
-
-        net_return = (
-            raw_return
-            - total_cost
+        selected = (
+            scores >= 75
         )
 
-        records.append({
+        if (
+            selected.sum()
+            < minimum_samples
+        ):
+            continue
 
-            "代码":
-                row["代码"],
+        returns = (
+            future_returns[
+                selected
+            ]
+        )
 
-            "日期":
-                row["日期"],
+        avg_return = (
+            np.mean(returns)
+        )
 
-            "评分":
-                score,
+        median_return = (
+            np.median(returns)
+        )
 
-            "毛收益":
-                raw_return,
+        win_rate = (
+            np.mean(
+                returns > 0
+            )
+            * 100
+        )
 
-            "净收益":
-                net_return
-        })
+        objective = (
+            avg_return * 0.45
+            +
+            median_return * 0.20
+            +
+            win_rate * 0.25
+        )
 
-    return pd.DataFrame(
-        records
+        if (
+            best is None
+            or objective
+            > best["objective"]
+        ):
+
+            best = {
+
+                "objective":
+                    objective,
+
+                "平均收益":
+                    avg_return,
+
+                "中位数收益":
+                    median_return,
+
+                "胜率":
+                    win_rate,
+
+                "样本数":
+                    int(
+                        selected.sum()
+                    ),
+
+                "weights":
+                    weights
+            }
+
+    return best
+
+
+# =========================================================
+# 建立回测样本
+# =========================================================
+
+def create_samples(
+    df,
+    code,
+    holding_days,
+    start,
+    end
+):
+
+    if end <= start:
+
+        return pd.DataFrame()
+
+    future_close = (
+        df["收盘"]
+        .shift(
+            -holding_days
+        )
+    )
+
+    future_return = (
+        future_close
+        / df["收盘"]
+        - 1
+    ) * 100
+
+    factors = create_factor_scores(
+        df
+    )
+
+    samples = factors.copy()
+
+    samples["代码"] = code
+
+    samples["日期"] = (
+        df["日期"]
+    )
+
+    samples["未来收益"] = (
+        future_return
+    )
+
+    samples = samples.iloc[
+        start:end
+    ]
+
+    samples = samples.dropna()
+
+    return samples
+
+
+# =========================================================
+# 单股票 Walk Forward
+# =========================================================
+
+def walk_forward_stock(
+    code,
+    holding_days,
+    train_ratio,
+    minimum_samples,
+    fee,
+    slippage
+):
+
+    try:
+
+        df = load_stock_data(
+            code
+        )
+
+        df = calculate_indicators(
+            df
+        )
+
+    except Exception:
+
+        return (
+            pd.DataFrame(),
+            None
+        )
+
+    total = len(df)
+
+    if total < 250:
+
+        return (
+            pd.DataFrame(),
+            None
+        )
+
+    train_end = int(
+        total
+        * train_ratio
+    )
+
+    validation_start = train_end
+
+    validation_end = (
+        total
+        - holding_days
+    )
+
+    train_samples = create_samples(
+        df,
+        code,
+        holding_days,
+        60,
+        train_end
+    )
+
+    if (
+        len(train_samples)
+        < minimum_samples
+    ):
+
+        return (
+            pd.DataFrame(),
+            None
+        )
+
+    best = optimize_weights(
+        train_samples,
+        minimum_samples
+    )
+
+    if best is None:
+
+        return (
+            pd.DataFrame(),
+            None
+        )
+
+    validation_samples = create_samples(
+        df,
+        code,
+        holding_days,
+        validation_start,
+        validation_end
+    )
+
+    if validation_samples.empty:
+
+        return (
+            pd.DataFrame(),
+            best
+        )
+
+    factors = {
+
+        "trend":
+            validation_samples[
+                "trend"
+            ].values,
+
+        "momentum":
+            validation_samples[
+                "momentum"
+            ].values,
+
+        "macd":
+            validation_samples[
+                "macd"
+            ].values,
+
+        "volume":
+            validation_samples[
+                "volume"
+            ].values,
+
+        "breakout":
+            validation_samples[
+                "breakout"
+            ].values,
+
+        "risk":
+            validation_samples[
+                "risk"
+            ].values
+    }
+
+    scores = calculate_score(
+        factors,
+        best["weights"]
+    )
+
+    validation_samples[
+        "评分"
+    ] = scores
+
+    validation_samples = (
+        validation_samples[
+            validation_samples["评分"]
+            >= 75
+        ]
+        .copy()
+    )
+
+    if validation_samples.empty:
+
+        return (
+            pd.DataFrame(),
+            best
+        )
+
+    cost = (
+        fee * 2
+        +
+        slippage * 2
+    ) * 100
+
+    validation_samples[
+        "净收益"
+    ] = (
+        validation_samples[
+            "未来收益"
+        ]
+        - cost
+    )
+
+    validation_samples[
+        "股票名称"
+    ] = STOCK_NAMES.get(
+        code,
+        "未知股票"
+    )
+
+    return (
+        validation_samples,
+        best
+    )
+
+
+# =========================================================
+# 全股票回测
+# =========================================================
+
+def run_backtest(
+    selected_stocks,
+    holding_days,
+    train_ratio,
+    minimum_samples,
+    fee,
+    slippage
+):
+
+    all_results = []
+
+    weight_records = []
+
+    progress = st.progress(
+        0
+    )
+
+    status = st.empty()
+
+    total = len(
+        selected_stocks
+    )
+
+    for index, code in enumerate(
+        selected_stocks
+    ):
+
+        status.write(
+            f"正在分析："
+            f"{STOCK_NAMES.get(code, '未知股票')} "
+            f"({code}) "
+            f"{index + 1}/{total}"
+        )
+
+        result, best = (
+            walk_forward_stock(
+                code,
+                holding_days,
+                train_ratio,
+                minimum_samples,
+                fee,
+                slippage
+            )
+        )
+
+        if not result.empty:
+
+            all_results.append(
+                result
+            )
+
+        if best is not None:
+
+            weights = best[
+                "weights"
+            ]
+
+            weight_records.append({
+
+                "代码":
+                    code,
+
+                "股票名称":
+                    STOCK_NAMES.get(
+                        code,
+                        "未知股票"
+                    ),
+
+                "训练样本":
+                    best["样本数"],
+
+                "训练胜率":
+                    best["胜率"],
+
+                "训练平均收益":
+                    best["平均收益"],
+
+                "趋势":
+                    weights[0],
+
+                "动量":
+                    weights[1],
+
+                "MACD":
+                    weights[2],
+
+                "成交量":
+                    weights[3],
+
+                "突破":
+                    weights[4],
+
+                "风险":
+                    weights[5]
+            })
+
+        progress.progress(
+            int(
+                (
+                    index + 1
+                )
+                / total
+                * 100
+            )
+        )
+
+    status.write(
+        "✅ 分析完成"
+    )
+
+    if all_results:
+
+        results = pd.concat(
+            all_results,
+            ignore_index=True
+        )
+
+    else:
+
+        results = pd.DataFrame()
+
+    weights_df = pd.DataFrame(
+        weight_records
+    )
+
+    return (
+        results,
+        weights_df
     )
 
 
@@ -1281,7 +1303,9 @@ def calculate_performance(
         return None
 
     returns = (
-        results["净收益"]
+        results[
+            "净收益"
+        ]
         / 100
     )
 
@@ -1299,30 +1323,6 @@ def calculate_performance(
         / peak
         - 1
     )
-
-    max_drawdown = (
-        drawdown.min()
-        * 100
-    )
-
-    win_rate = (
-        returns > 0
-    ).mean() * 100
-
-    avg_return = (
-        returns.mean()
-        * 100
-    )
-
-    median_return = (
-        returns.median()
-        * 100
-    )
-
-    cumulative_return = (
-        equity.iloc[-1]
-        - 1
-    ) * 100
 
     volatility = (
         returns.std()
@@ -1351,366 +1351,144 @@ def calculate_performance(
             len(results),
 
         "胜率":
-            win_rate,
+            (
+                returns > 0
+            ).mean() * 100,
 
         "平均收益":
-            avg_return,
+            returns.mean() * 100,
 
         "中位数收益":
-            median_return,
+            returns.median() * 100,
 
         "累计收益":
-            cumulative_return,
+            (
+                equity.iloc[-1]
+                - 1
+            ) * 100,
 
         "最大回撤":
-            max_drawdown,
+            drawdown.min() * 100,
 
-        "夏普比率":
+        "夏普":
             sharpe,
 
-        "最大单次收益":
-            results["净收益"].max(),
+        "最大盈利":
+            results[
+                "净收益"
+            ].max(),
 
-        "最大单次亏损":
-            results["净收益"].min()
+        "最大亏损":
+            results[
+                "净收益"
+            ].min()
     }
 
 
 # =========================================================
-# Walk-Forward
-# =========================================================
-
-def run_walk_forward(
-    holding_days,
-    train_ratio=0.6,
-    validation_ratio=0.2,
-    minimum_samples=20,
-    fee=0.0003,
-    slippage=0.001
-):
-
-    all_validation = []
-
-    optimization_records = []
-
-    for code in STOCKS:
-
-        try:
-
-            df = load_stock_data(
-                code
-            )
-
-        except Exception:
-
-            continue
-
-        total = len(df)
-
-        if total < 250:
-
-            continue
-
-        train_end = int(
-            total
-            * train_ratio
-        )
-
-        validation_end = int(
-            total
-            * (
-                train_ratio
-                + validation_ratio
-            )
-        )
-
-        # =================================================
-        # 第一阶段：训练
-        # =================================================
-
-        train_samples = []
-
-        for i in range(
-            60,
-            min(
-                train_end,
-                total - holding_days
-            )
-        ):
-
-            factors = calculate_factors(
-                df,
-                i
-            )
-
-            if factors is None:
-                continue
-
-            buy_price = value(
-                df.iloc[i],
-                "收盘"
-            )
-
-            future_price = value(
-                df.iloc[
-                    i + holding_days
-                ],
-                "收盘"
-            )
-
-            if (
-                pd.isna(buy_price)
-                or pd.isna(future_price)
-                or buy_price <= 0
-            ):
-
-                continue
-
-            future_return = (
-                future_price
-                / buy_price
-                - 1
-            ) * 100
-
-            train_samples.append({
-
-                "代码": code,
-
-                "日期":
-                    df.iloc[i]["日期"],
-
-                "未来收益":
-                    future_return,
-
-                **factors
-            })
-
-        train_df = pd.DataFrame(
-            train_samples
-        )
-
-        if len(train_df) < minimum_samples:
-
-            continue
-
-        optimization = optimize_weights(
-            train_df,
-            minimum_samples
-        )
-
-        if optimization is None:
-
-            continue
-
-        best = optimization["best"]
-
-        weights = best[
-            "weights"
-        ]
-
-        # =================================================
-        # 第二阶段：验证
-        # =================================================
-
-        validation_samples = []
-
-        validation_start = train_end
-
-        validation_end_actual = min(
-            validation_end,
-            total - holding_days
-        )
-
-        for i in range(
-            validation_start,
-            validation_end_actual
-        ):
-
-            factors = calculate_factors(
-                df,
-                i
-            )
-
-            if factors is None:
-                continue
-
-            buy_price = value(
-                df.iloc[i],
-                "收盘"
-            )
-
-            future_price = value(
-                df.iloc[
-                    i + holding_days
-                ],
-                "收盘"
-            )
-
-            if (
-                pd.isna(buy_price)
-                or pd.isna(future_price)
-                or buy_price <= 0
-            ):
-
-                continue
-
-            future_return = (
-                future_price
-                / buy_price
-                - 1
-            ) * 100
-
-            validation_samples.append({
-
-                "代码": code,
-
-                "日期":
-                    df.iloc[i]["日期"],
-
-                "未来收益":
-                    future_return,
-
-                **factors
-            })
-
-        validation_df = pd.DataFrame(
-            validation_samples
-        )
-
-        if validation_df.empty:
-
-            continue
-
-        validation_results = (
-            backtest_with_weights(
-                validation_df,
-                weights,
-                minimum_score=75,
-                fee=fee,
-                slippage=slippage
-            )
-        )
-
-        if validation_results.empty:
-
-            continue
-
-        all_validation.append(
-            validation_results
-        )
-
-        optimization_records.append({
-
-            "代码": code,
-
-            "训练样本":
-                len(train_df),
-
-            "训练胜率":
-                best["胜率"],
-
-            "训练平均收益":
-                best["平均收益"],
-
-            "趋势权重":
-                weights["trend"],
-
-            "动量权重":
-                weights["momentum"],
-
-            "MACD权重":
-                weights["macd"],
-
-            "成交量权重":
-                weights["volume"],
-
-            "突破权重":
-                weights["breakout"]
-        })
-
-    if not all_validation:
-
-        return (
-            pd.DataFrame(),
-            pd.DataFrame()
-        )
-
-    validation_all = pd.concat(
-        all_validation,
-        ignore_index=True
-    )
-
-    optimization_df = pd.DataFrame(
-        optimization_records
-    )
-
-    return (
-        validation_all,
-        optimization_df
-    )
-
-
-# =========================================================
-# 首页信息
+# 页面：股票池
 # =========================================================
 
 st.sidebar.header(
-    "📊 股票池"
+    "📋 股票池"
 )
 
 st.sidebar.write(
-    f"股票数量：**{len(STOCKS)}**"
+    f"CSV股票数量：{len(ALL_STOCKS)}"
 )
 
+if len(ALL_STOCKS) > 0:
+
+    mode = st.sidebar.radio(
+        "选择分析方式",
+        [
+            "全部股票",
+            "前20只",
+            "前50只",
+            "自定义股票"
+        ]
+    )
+
+else:
+
+    mode = "全部股票"
+
+
+if mode == "全部股票":
+
+    selected_stocks = ALL_STOCKS
+
+elif mode == "前20只":
+
+    selected_stocks = (
+        ALL_STOCKS[:20]
+    )
+
+elif mode == "前50只":
+
+    selected_stocks = (
+        ALL_STOCKS[:50]
+    )
+
+else:
+
+    selected_stocks = st.sidebar.multiselect(
+        "选择股票",
+        ALL_STOCKS,
+        format_func=lambda x:
+            f"{STOCK_NAMES.get(x, '未知股票')} ({x})"
+    )
+
+
 st.sidebar.write(
-    f"名称数量：**{len(STOCK_NAMES)}**"
+    f"本次选择：**{len(selected_stocks)}** 只"
 )
 
 
 # =========================================================
-# 单股分析
+# 单只股票
 # =========================================================
 
 st.subheader(
     "🔎 单只股票分析"
 )
 
-stock_code = st.text_input(
-    "请输入6位A股代码",
+single_code = st.text_input(
+    "输入股票代码",
     value="600900"
 ).strip()
 
 
 if st.button(
-    "开始分析",
+    "开始单股分析",
     type="primary"
 ):
 
     if (
-        not stock_code.isdigit()
-        or len(stock_code) != 6
+        not single_code.isdigit()
+        or len(single_code) != 6
     ):
 
         st.error(
-            "请输入6位数字股票代码，例如 600900"
+            "请输入6位股票代码，例如600900"
         )
 
         st.stop()
 
     try:
 
-        with st.spinner(
-            "正在读取行情……"
-        ):
+        df = load_stock_data(
+            single_code
+        )
 
-            df = load_stock_data(
-                stock_code
-            )
+        df = calculate_indicators(
+            df
+        )
 
     except Exception as e:
 
         st.error(
-            "读取行情失败"
+            "读取股票数据失败"
         )
 
         st.code(
@@ -1719,92 +1497,70 @@ if st.button(
 
         st.stop()
 
+    factors_df = create_factor_scores(
+        df
+    )
+
+    latest_factors = (
+        factors_df.iloc[-1]
+    )
+
+    weights = np.array(
+        [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+        ]
+    )
+
+    score = calculate_score(
+        {
+            "trend":
+                np.array(
+                    [latest_factors["trend"]]
+                ),
+
+            "momentum":
+                np.array(
+                    [latest_factors["momentum"]]
+                ),
+
+            "macd":
+                np.array(
+                    [latest_factors["macd"]]
+                ),
+
+            "volume":
+                np.array(
+                    [latest_factors["volume"]]
+                ),
+
+            "breakout":
+                np.array(
+                    [latest_factors["breakout"]]
+                ),
+
+            "risk":
+                np.array(
+                    [latest_factors["risk"]]
+                )
+        },
+        weights
+    )[0]
+
     latest = df.iloc[-1]
 
     name = STOCK_NAMES.get(
-        stock_code,
+        single_code,
         "未知股票"
     )
 
-    price = value(
-        latest,
-        "收盘"
-    )
-
-    change = value(
-        latest,
-        "涨跌幅"
-    )
-
-    ma5 = value(
-        latest,
-        "MA5"
-    )
-
-    ma20 = value(
-        latest,
-        "MA20"
-    )
-
-    ma60 = value(
-        latest,
-        "MA60"
-    )
-
-    dif = value(
-        latest,
-        "DIF"
-    )
-
-    dea = value(
-        latest,
-        "DEA"
-    )
-
-    macd = value(
-        latest,
-        "MACD"
-    )
-
-    volume = value(
-        latest,
-        "成交量"
-    )
-
-    volume20 = value(
-        latest,
-        "VOL20"
-    )
-
-    factors = calculate_factors(
-        df,
-        len(df) - 1
-    )
-
-    default_weights = {
-
-        "trend": 1.0,
-
-        "momentum": 1.0,
-
-        "macd": 1.0,
-
-        "volume": 1.0,
-
-        "breakout": 1.0,
-
-        "risk": 1.0
-    }
-
-    score = weighted_score(
-        factors,
-        default_weights
-    )
-
     st.success(
-        f"📌 {name}（{stock_code}）"
-        f" · 数据日期："
-        f"{latest['日期'].strftime('%Y-%m-%d')}"
+        f"📌 {name}（{single_code}）"
+        f" · {latest['日期'].strftime('%Y-%m-%d')}"
     )
 
     col1, col2, col3, col4 = st.columns(4)
@@ -1812,23 +1568,23 @@ if st.button(
     with col1:
 
         st.metric(
-            "最新收盘",
-            f"{price:.2f}",
-            f"{change:.2f}%"
+            "收盘价",
+            f"{latest['收盘']:.2f}",
+            f"{latest['涨跌幅']:.2f}%"
         )
 
     with col2:
 
         st.metric(
-            "MA5",
-            f"{ma5:.2f}"
+            "MA20",
+            f"{latest['MA20']:.2f}"
         )
 
     with col3:
 
         st.metric(
-            "MA20",
-            f"{ma20:.2f}"
+            "MACD",
+            f"{latest['MACD']:.3f}"
         )
 
     with col4:
@@ -1838,182 +1594,32 @@ if st.button(
             f"{score:.1f}"
         )
 
-    # =====================================================
-    # 趋势
-    # =====================================================
-
-    st.subheader(
-        "📈 趋势"
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-
-        st.metric(
-            "MA5",
-            f"{ma5:.2f}"
-        )
-
-    with col2:
-
-        st.metric(
-            "MA20",
-            f"{ma20:.2f}"
-        )
-
-    with col3:
-
-        st.metric(
-            "MA60",
-            f"{ma60:.2f}"
-        )
-
-    if (
-        ma5 > ma20
-        and ma20 > ma60
-    ):
-
-        st.success(
-            "🟢 MA多头排列"
-        )
-
-    elif ma5 > ma20:
-
-        st.info(
-            "🟡 短期趋势偏强"
-        )
-
-    else:
-
-        st.warning(
-            "🔴 趋势偏弱"
-        )
-
-    # =====================================================
-    # MACD
-    # =====================================================
-
-    st.subheader(
-        "📊 MACD"
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-
-        st.metric(
-            "DIF",
-            f"{dif:.3f}"
-        )
-
-    with col2:
-
-        st.metric(
-            "DEA",
-            f"{dea:.3f}"
-        )
-
-    with col3:
-
-        st.metric(
-            "MACD",
-            f"{macd:.3f}"
-        )
-
-    if dif > dea:
-
-        st.success(
-            "🟢 DIF > DEA"
-        )
-
-    else:
-
-        st.warning(
-            "🔴 DIF < DEA"
-        )
-
-    # =====================================================
-    # 成交量
-    # =====================================================
-
-    st.subheader(
-        "🔊 成交量"
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.metric(
-            "成交量",
-            f"{volume:,.0f}"
-        )
-
-    with col2:
-
-        st.metric(
-            "20日均量",
-            f"{volume20:,.0f}"
-        )
-
-    if (
-        pd.notna(volume20)
-        and volume > volume20
-    ):
-
-        st.success(
-            "🟢 放量"
-        )
-
-    else:
-
-        st.info(
-            "⚪ 未明显放量"
-        )
-
-    # =====================================================
-    # 综合评分
-    # =====================================================
-
-    st.subheader(
-        "🤖 综合量化评分"
-    )
-
-    st.progress(
-        int(score)
-    )
-
     if score >= 80:
 
         st.success(
-            f"🟢 强势信号：{score:.1f}/100"
+            "🟢 强势"
         )
 
     elif score >= 70:
 
         st.info(
-            f"🟡 偏强信号：{score:.1f}/100"
+            "🟡 偏强"
         )
 
     elif score >= 60:
 
         st.warning(
-            f"🟠 中性：{score:.1f}/100"
+            "🟠 中性"
         )
 
     else:
 
         st.error(
-            f"🔴 偏弱：{score:.1f}/100"
+            "🔴 偏弱"
         )
 
-    # =====================================================
-    # K线相关数据
-    # =====================================================
-
     st.subheader(
-        "📉 最近120个交易日"
+        "📈 均线"
     )
 
     chart = df.tail(120)[
@@ -2033,7 +1639,7 @@ if st.button(
     )
 
     st.subheader(
-        "📊 MACD走势"
+        "📊 MACD"
     )
 
     macd_chart = df.tail(120)[
@@ -2053,38 +1659,24 @@ if st.button(
 
 
 # =========================================================
-# V5.3
+# V5.4 回测
 # =========================================================
 
 st.divider()
 
 st.subheader(
-    "🧠 V5.3 Walk-Forward 自动优化"
+    "🧠 V5.4 自动优化 + Walk-Forward"
 )
-
-st.write(
-    "程序会使用过去数据训练权重，"
-    "再使用之后从未参与训练的数据进行验证。"
-)
-
 
 col1, col2, col3 = st.columns(3)
-
 
 with col1:
 
     holding_days = st.selectbox(
         "持有周期",
-        [
-            5,
-            10,
-            20
-        ],
-        format_func=lambda x:
-            f"{x}个交易日",
-        key="v53_holding"
+        [5, 10, 20],
+        index=0
     )
-
 
 with col2:
 
@@ -2096,43 +1688,36 @@ with col2:
         0.05
     )
 
-
 with col3:
 
     minimum_samples = st.number_input(
-        "最低样本数",
+        "最低训练样本",
         min_value=10,
-        max_value=200,
+        max_value=100,
         value=20,
-        step=10
+        step=5
     )
 
 
-st.subheader(
-    "💰 回测成本"
-)
-
 col1, col2 = st.columns(2)
-
 
 with col1:
 
     fee = st.number_input(
         "单边手续费",
         min_value=0.0,
-        max_value=0.005,
+        max_value=0.01,
         value=0.0003,
         step=0.0001,
         format="%.4f"
     )
-
 
 with col2:
 
     slippage = st.number_input(
         "单边滑点",
         min_value=0.0,
-        max_value=0.01,
+        max_value=0.02,
         value=0.001,
         step=0.0005,
         format="%.4f"
@@ -2140,63 +1725,58 @@ with col2:
 
 
 if st.button(
-    "🚀 开始 V5.3 滚动回测",
+    "🚀 开始 V5.4 回测",
     type="primary",
     use_container_width=True
 ):
 
-    if len(STOCKS) == 0:
+    if len(selected_stocks) == 0:
 
         st.error(
-            "股票池为空，请检查 stock_list.csv"
+            "请先选择股票"
         )
 
         st.stop()
 
     with st.spinner(
-        "正在进行 Walk-Forward 回测……"
+        "正在进行加速回测……"
     ):
 
-        validation_results, optimization_df = (
-            run_walk_forward(
-                holding_days=holding_days,
-                train_ratio=train_ratio,
-                validation_ratio=(
-                    1 - train_ratio
-                ) / 2,
-                minimum_samples=minimum_samples,
-                fee=fee,
-                slippage=slippage
+        results, weights_df = (
+            run_backtest(
+                selected_stocks,
+                holding_days,
+                train_ratio,
+                minimum_samples,
+                fee,
+                slippage
             )
         )
 
-    if validation_results.empty:
+    if results.empty:
 
         st.error(
-            "没有得到有效的样本外回测结果。"
-        )
-
-        st.info(
-            "可能是股票历史数据不足，"
-            "或者最低样本数设置过高。"
+            "没有得到有效的样本外结果。"
         )
 
         st.stop()
 
-    # =====================================================
-    # 总体表现
-    # =====================================================
-
-    performance = calculate_performance(
-        validation_results
+    performance = (
+        calculate_performance(
+            results
+        )
     )
 
     st.success(
-        "✅ Walk-Forward 样本外回测完成"
+        "✅ V5.4 样本外回测完成"
     )
 
+    # -----------------------------------------------------
+    # 总体指标
+    # -----------------------------------------------------
+
     st.subheader(
-        "📊 样本外真实表现"
+        "📊 样本外表现"
     )
 
     col1, col2, col3, col4 = st.columns(4)
@@ -2249,33 +1829,34 @@ if st.button(
 
         st.metric(
             "夏普比率",
-            f"{performance['夏普比率']:.2f}"
+            f"{performance['夏普']:.2f}"
         )
 
     with col4:
 
         st.metric(
             "最大亏损",
-            f"{performance['最大单次亏损']:.2f}%"
+            f"{performance['最大亏损']:.2f}%"
         )
 
-    # =====================================================
-    # 判断
-    # =====================================================
+    # -----------------------------------------------------
+    # 模型评价
+    # -----------------------------------------------------
 
     st.subheader(
         "🧠 模型评价"
     )
 
     if (
-        performance["平均收益"] > 0
+        performance["平均收益"] > 0.5
         and performance["胜率"] >= 55
-        and performance["夏普比率"] > 1
+        and performance["夏普"] >= 1
+        and performance["最大回撤"] > -25
     ):
 
         st.success(
-            "🟢 当前样本外结果较好。"
-            "模型在未参与训练的数据上仍保持正收益和较好的风险收益比。"
+            "🟢 模型表现较好："
+            "样本外收益、胜率和风险控制均较合理。"
         )
 
     elif (
@@ -2284,28 +1865,28 @@ if st.button(
     ):
 
         st.info(
-            "🟡 模型存在一定正向效果，"
-            "但优势还不够明显，需要更多历史数据和不同市场阶段验证。"
+            "🟡 模型存在一定优势，"
+            "但还需要更多市场阶段进行验证。"
         )
 
     else:
 
         st.warning(
-            "🔴 当前样本外结果不足以证明模型具有稳定优势。"
-            "不要仅根据训练集结果使用该策略。"
+            "🔴 当前样本外表现较弱，"
+            "暂时不建议把模型结果直接用于实盘决策。"
         )
 
-    # =====================================================
-    # 收益曲线
-    # =====================================================
+    # -----------------------------------------------------
+    # 累计净值
+    # -----------------------------------------------------
 
     st.subheader(
-        "📈 样本外累计收益曲线"
+        "📈 样本外累计净值"
     )
 
     equity = (
         1
-        + validation_results[
+        + results[
             "净收益"
         ] / 100
     ).cumprod()
@@ -2321,12 +1902,12 @@ if st.button(
         equity_df
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # 回撤
-    # =====================================================
+    # -----------------------------------------------------
 
     st.subheader(
-        "📉 回撤曲线"
+        "📉 回撤"
     )
 
     peak = (
@@ -2351,19 +1932,23 @@ if st.button(
         drawdown_df
     )
 
-    # =====================================================
-    # 各股票表现
-    # =====================================================
+    # -----------------------------------------------------
+    # 各股票
+    # -----------------------------------------------------
 
     st.subheader(
-        "🏆 各股票样本外表现"
+        "🏆 股票表现"
     )
 
     stock_stats = (
-        validation_results
-        .groupby("代码")
+        results
+        .groupby(
+            [
+                "代码",
+                "股票名称"
+            ]
+        )
         .agg(
-
             样本数=(
                 "净收益",
                 "count"
@@ -2395,33 +1980,12 @@ if st.button(
         .reset_index()
     )
 
-    stock_stats["股票名称"] = (
-        stock_stats["代码"]
-        .map(STOCK_NAMES)
-        .fillna("未知股票")
-    )
-
-    stock_stats = stock_stats[
-        [
-            "股票名称",
-            "代码",
-            "样本数",
-            "胜率",
-            "平均收益",
-            "最大收益",
-            "最大亏损"
-        ]
-    ]
-
     stock_stats = stock_stats.sort_values(
         [
             "胜率",
             "平均收益"
         ],
-        ascending=[
-            False,
-            False
-        ]
+        ascending=False
     )
 
     st.dataframe(
@@ -2430,93 +1994,79 @@ if st.button(
         hide_index=True
     )
 
-    # =====================================================
-    # 权重统计
-    # =====================================================
+    # -----------------------------------------------------
+    # 自动权重
+    # -----------------------------------------------------
 
-    if not optimization_df.empty:
+    if not weights_df.empty:
 
         st.subheader(
-            "⚙️ Walk-Forward 自动优化权重"
+            "⚙️ 自动优化权重"
         )
 
-        weight_columns = [
-            "趋势权重",
-            "动量权重",
-            "MACD权重",
-            "成交量权重",
-            "突破权重"
-        ]
-
-        weight_summary = (
-            optimization_df[
-                weight_columns
-            ]
-            .mean()
-            .to_frame(
-                "平均权重"
-            )
+        average_weights = pd.DataFrame(
+            {
+                "平均权重":
+                    weights_df[
+                        [
+                            "趋势",
+                            "动量",
+                            "MACD",
+                            "成交量",
+                            "突破",
+                            "风险"
+                        ]
+                    ].mean()
+            }
         )
 
         st.dataframe(
-            weight_summary,
+            average_weights,
             use_container_width=True
         )
 
-        st.subheader(
-            "📋 每只股票训练出的权重"
-        )
-
         st.dataframe(
-            optimization_df,
+            weights_df,
             use_container_width=True,
             hide_index=True
         )
 
-    # =====================================================
-    # 历史交易记录
-    # =====================================================
+    # -----------------------------------------------------
+    # 交易记录
+    # -----------------------------------------------------
 
     st.subheader(
         "📋 样本外交易记录"
     )
 
-    display_results = (
-        validation_results
-        .copy()
-    )
-
-    display_results["股票名称"] = (
-        display_results["代码"]
-        .map(STOCK_NAMES)
-        .fillna("未知股票")
-    )
-
-    display_results = display_results[
+    display_results = results[
         [
             "股票名称",
             "代码",
             "日期",
             "评分",
-            "毛收益",
+            "未来收益",
             "净收益"
         ]
-    ]
+    ].copy()
 
-    display_results = display_results.sort_values(
-        "日期",
-        ascending=False
+    display_results = (
+        display_results
+        .sort_values(
+            "日期",
+            ascending=False
+        )
     )
 
     st.dataframe(
-        display_results.head(300),
+        display_results.head(500),
         use_container_width=True,
         hide_index=True
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # 下载
-    # =====================================================
+    # -----------------------------------------------------
 
     csv = (
         display_results
@@ -2527,11 +2077,11 @@ if st.button(
     )
 
     st.download_button(
-        "⬇️ 下载样本外回测结果",
+        "⬇️ 下载回测结果",
         data=csv,
         file_name=(
-            f"V5.3_walk_forward_"
-            f"{holding_days}days.csv"
+            f"V5.4_回测结果_"
+            f"{holding_days}日.csv"
         ),
         mime="text/csv",
         use_container_width=True
@@ -2539,7 +2089,7 @@ if st.button(
 
 
 # =========================================================
-# 股票池
+# 当前股票池
 # =========================================================
 
 st.divider()
@@ -2548,32 +2098,18 @@ st.subheader(
     "📋 当前股票池"
 )
 
-if STOCKS:
+if stock_list.empty:
 
-    stock_preview = pd.DataFrame(
-        {
-            "股票名称": [
-                STOCK_NAMES.get(
-                    code,
-                    "未知股票"
-                )
-                for code in STOCKS
-            ],
-
-            "代码": STOCKS
-        }
-    )
-
-    st.dataframe(
-        stock_preview,
-        use_container_width=True,
-        hide_index=True
+    st.warning(
+        "没有读取到 stock_list.csv"
     )
 
 else:
 
-    st.warning(
-        "没有读取到 stock_list.csv"
+    st.dataframe(
+        stock_list,
+        use_container_width=True,
+        hide_index=True
     )
 
 
