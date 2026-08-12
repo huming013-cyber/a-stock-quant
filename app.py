@@ -1,46 +1,44 @@
 import os
 import itertools
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 
 
 # =========================================================
-# 页面设置
+# 页面
 # =========================================================
 
 st.set_page_config(
-    page_title="A股量化助手 V2.2",
+    page_title="A股量化助手 V3.0",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 A股量化助手 V2.2")
+st.title("📈 A股量化助手 V3.0")
 
 st.caption(
-    "训练集 / 测试集 · 自动参数优化 · 防止未来数据泄漏"
-)
-# =========================================================
-# 数据刷新按钮
-# =========================================================
-
-refresh_col1, refresh_col2 = st.columns(
-    [1, 5]
+    "股票 + ETF · 自动优化 · 样本外测试 · Walk-Forward"
 )
 
-with refresh_col1:
-
-    if st.button(
-        "🔄 刷新数据",
-        use_container_width=True
-    ):
-
-        st.cache_data.clear()
-
-        st.rerun()
 
 # =========================================================
-# 读取股票 / ETF列表
+# 刷新
+# =========================================================
+
+if st.button(
+    "🔄 刷新数据",
+    use_container_width=True
+):
+
+    st.cache_data.clear()
+
+    st.rerun()
+
+
+# =========================================================
+# 列表
 # =========================================================
 
 @st.cache_data
@@ -66,17 +64,24 @@ def load_list(filename):
     return df
 
 
-stocks = load_list("stock_list.csv")
+stocks = load_list(
+    "stock_list.csv"
+)
 
-etfs = load_list("etf_list.csv")
+etfs = load_list(
+    "etf_list.csv"
+)
 
 
 # =========================================================
-# 读取行情
+# 数据
 # =========================================================
 
 @st.cache_data
-def load_data(code, asset_type):
+def load_data(
+    code,
+    asset_type
+):
 
     filename = (
         f"data/{asset_type}_{code}.csv"
@@ -85,23 +90,15 @@ def load_data(code, asset_type):
     if not os.path.exists(filename):
 
         raise FileNotFoundError(
-            f"没有找到行情文件：{filename}"
+            f"找不到数据文件：{filename}"
         )
 
-    df = pd.read_csv(filename)
-
-    if df.empty:
-
-        raise ValueError(
-            "行情数据为空"
-        )
-
-    df["日期"] = pd.to_datetime(
-        df["日期"],
-        errors="coerce"
+    df = pd.read_csv(
+        filename
     )
 
-    number_columns = [
+    required = [
+        "日期",
         "开盘",
         "最高",
         "最低",
@@ -109,14 +106,31 @@ def load_data(code, asset_type):
         "成交量"
     ]
 
-    for col in number_columns:
+    for col in required:
 
-        if col in df.columns:
+        if col not in df.columns:
 
-            df[col] = pd.to_numeric(
-                df[col],
-                errors="coerce"
+            raise ValueError(
+                f"{filename} 缺少 {col}"
             )
+
+    df["日期"] = pd.to_datetime(
+        df["日期"],
+        errors="coerce"
+    )
+
+    for col in [
+        "开盘",
+        "最高",
+        "最低",
+        "收盘",
+        "成交量"
+    ]:
+
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
 
     df = df.dropna(
         subset=[
@@ -131,157 +145,115 @@ def load_data(code, asset_type):
     )
 
     df = df.drop_duplicates(
-        subset=["日期"]
+        "日期"
     )
 
-    df = df.reset_index(
+    return df.reset_index(
         drop=True
     )
 
-    return df
-
 
 # =========================================================
-# 技术指标
+# 指标
 # =========================================================
 
-def calculate_indicators(
+def indicators(
     df,
-    ma_short,
-    ma_long,
-    volume_window
+    ma_fast,
+    ma_slow,
+    momentum_window,
+    volatility_window
 ):
 
     data = df.copy()
 
-    # -----------------------------------------------------
-    # MA
-    # -----------------------------------------------------
-
-    data["MA_SHORT"] = (
+    # 趋势
+    data["MA_FAST"] = (
         data["收盘"]
-        .rolling(ma_short)
+        .rolling(ma_fast)
         .mean()
     )
 
-    data["MA_LONG"] = (
+    data["MA_SLOW"] = (
         data["收盘"]
-        .rolling(ma_long)
+        .rolling(ma_slow)
         .mean()
     )
 
-    # -----------------------------------------------------
-    # MACD
-    # -----------------------------------------------------
-
-    ema12 = (
+    # 动量
+    data["MOM"] = (
         data["收盘"]
-        .ewm(
-            span=12,
-            adjust=False
-        )
-        .mean()
-    )
-
-    ema26 = (
+        /
         data["收盘"]
-        .ewm(
-            span=26,
-            adjust=False
-        )
-        .mean()
+        .shift(momentum_window)
+        - 1
     )
 
-    data["DIF"] = (
-        ema12 - ema26
+    # 波动率
+    data["RET"] = (
+        data["收盘"]
+        .pct_change()
     )
 
-    data["DEA"] = (
-        data["DIF"]
-        .ewm(
-            span=9,
-            adjust=False
-        )
-        .mean()
+    data["VOLATILITY"] = (
+        data["RET"]
+        .rolling(volatility_window)
+        .std()
+        *
+        np.sqrt(252)
     )
 
-    data["MACD"] = (
-        data["DIF"]
-        - data["DEA"]
-    ) * 2
-
-    # -----------------------------------------------------
-    # 成交量
-    # -----------------------------------------------------
-
-    data["VOL_AVG"] = (
-        data["成交量"]
-        .rolling(volume_window)
-        .mean()
-    )
-
-    # -----------------------------------------------------
-    # 条件
-    # -----------------------------------------------------
-
-    condition_ma = (
-        data["MA_SHORT"]
+    # 趋势评分
+    trend_score = (
+        data["MA_FAST"]
         >
-        data["MA_LONG"]
+        data["MA_SLOW"]
+    ).astype(int)
+
+    # 动量评分
+    momentum_score = (
+        data["MOM"] > 0
+    ).astype(int)
+
+    # 波动评分
+    volatility_median = (
+        data["VOLATILITY"]
+        .rolling(60)
+        .median()
     )
 
-    condition_macd = (
-        data["DIF"]
-        >
-        data["DEA"]
-    )
+    volatility_score = (
+        data["VOLATILITY"]
+        <
+        volatility_median * 1.5
+    ).astype(int)
 
-    condition_volume = (
-        data["成交量"]
-        >
-        data["VOL_AVG"]
-    )
-
-    # -----------------------------------------------------
     # 综合评分
-    # -----------------------------------------------------
-
     data["评分"] = (
-        condition_ma.astype(int)
+        trend_score
         +
-        condition_macd.astype(int)
+        momentum_score
         +
-        condition_volume.astype(int)
-    )
-
-    data["买入信号"] = (
-        data["评分"] == 3
-    )
-
-    data["卖出信号"] = (
-        data["评分"] == 0
+        volatility_score
     )
 
     return data
 
 
 # =========================================================
-# 回测函数
+# 回测
 # =========================================================
 
-def run_backtest(
+def backtest(
     df,
-    asset_type,
-    initial_capital,
-    commission_rate,
-    stamp_tax_rate,
-    slippage_rate,
-    position_ratio
+    initial_capital=100000,
+    commission=0.0003,
+    slippage=0.001,
+    position_ratio=0.95,
+    stamp_tax=0
 ):
 
-    data = df.copy()
-
-    if len(data) < 60:
+    if len(df) < 100:
 
         return None
 
@@ -299,158 +271,147 @@ def run_backtest(
 
     equity_records = []
 
-    # A股 / ETF统一按100份进行交易
-    lot_size = 100
-
-    # -----------------------------------------------------
-    # 注意：
-    #
-    # i日收盘产生信号
-    # i+1日开盘执行
-    #
-    # 因此绝不使用i+1日的任何数据来产生信号
-    # -----------------------------------------------------
+    lot = 100
 
     for i in range(
-        30,
-        len(data) - 1
+        60,
+        len(df) - 1
     ):
 
-        today = data.iloc[i]
+        today = df.iloc[i]
 
-        next_day = data.iloc[i + 1]
+        tomorrow = df.iloc[i + 1]
 
-        signal = int(
-            today["评分"]
-        )
+        score = today["评分"]
 
         next_open = float(
-            next_day["开盘"]
+            tomorrow["开盘"]
         )
 
-        if (
-            not np.isfinite(next_open)
-            or next_open <= 0
+        if not np.isfinite(
+            next_open
         ):
 
             continue
 
-        # =================================================
+        # -------------------------------------------------
         # 买入
-        # =================================================
+        # -------------------------------------------------
 
         if (
             shares == 0
-            and signal == 3
+            and score >= 3
         ):
-
-            available_cash = (
-                cash
-                * position_ratio
-            )
 
             buy_price = (
                 next_open
-                * (1 + slippage_rate)
+                *
+                (1 + slippage)
             )
 
-            max_shares = int(
-                available_cash
+            available = (
+                cash
+                *
+                position_ratio
+            )
+
+            shares_to_buy = int(
+                available
                 /
                 buy_price
                 /
-                lot_size
-            ) * lot_size
+                lot
+            ) * lot
 
-            if max_shares <= 0:
+            if shares_to_buy > 0:
 
-                continue
+                amount = (
+                    shares_to_buy
+                    *
+                    buy_price
+                )
 
-            amount = (
-                max_shares
-                * buy_price
-            )
+                fee = max(
+                    amount * commission,
+                    5
+                )
 
-            commission = max(
-                amount
-                * commission_rate,
-                5
-            )
+                total = (
+                    amount
+                    +
+                    fee
+                )
 
-            total_cost = (
-                amount
-                + commission
-            )
+                if total <= cash:
 
-            if total_cost > cash:
+                    cash -= total
 
-                continue
+                    shares = (
+                        shares_to_buy
+                    )
 
-            cash -= total_cost
+                    entry_price = (
+                        buy_price
+                    )
 
-            shares = max_shares
+                    entry_date = (
+                        tomorrow["日期"]
+                    )
 
-            entry_price = buy_price
-
-            entry_date = (
-                next_day["日期"]
-            )
-
-        # =================================================
+        # -------------------------------------------------
         # 卖出
-        # =================================================
+        # -------------------------------------------------
 
         elif (
             shares > 0
-            and signal == 0
+            and score <= 0
         ):
 
             sell_price = (
                 next_open
-                * (1 - slippage_rate)
+                *
+                (1 - slippage)
             )
 
             amount = (
                 shares
-                * sell_price
+                *
+                sell_price
             )
 
-            commission = max(
-                amount
-                * commission_rate,
+            fee = max(
+                amount * commission,
                 5
             )
 
-            if asset_type == "stock":
-
-                stamp_tax = (
-                    amount
-                    * stamp_tax_rate
-                )
-
-            else:
-
-                stamp_tax = 0
-
-            net_amount = (
+            tax = (
                 amount
-                - commission
-                - stamp_tax
+                *
+                stamp_tax
             )
 
-            gross_cost = (
+            net = (
+                amount
+                -
+                fee
+                -
+                tax
+            )
+
+            cost = (
                 shares
-                * entry_price
+                *
+                entry_price
             )
 
             trade_return = (
-                net_amount
+                net
                 /
-                gross_cost
+                cost
                 - 1
             ) * 100
 
-            cash += net_amount
+            cash += net
 
             trades.append({
 
@@ -461,7 +422,7 @@ def run_backtest(
                     entry_price,
 
                 "卖出日期":
-                    next_day["日期"],
+                    tomorrow["日期"],
 
                 "卖出价格":
                     sell_price,
@@ -471,7 +432,7 @@ def run_backtest(
 
                 "持有天数":
                     (
-                        next_day["日期"]
+                        tomorrow["日期"]
                         -
                         entry_date
                     ).days
@@ -483,18 +444,16 @@ def run_backtest(
 
             entry_date = None
 
-        # =================================================
-        # 每日权益
-        # =================================================
-
-        close_price = float(
-            today["收盘"]
-        )
+        # -------------------------------------------------
+        # 资金曲线
+        # -------------------------------------------------
 
         equity = (
             cash
             +
-            shares * close_price
+            shares
+            *
+            float(today["收盘"])
         )
 
         equity_records.append({
@@ -506,23 +465,21 @@ def run_backtest(
                 equity
         })
 
-    # =====================================================
+    # -----------------------------------------------------
     # 最终资产
-    # =====================================================
+    # -----------------------------------------------------
 
     last_close = float(
-        data.iloc[-1]["收盘"]
+        df.iloc[-1]["收盘"]
     )
 
     final_equity = (
         cash
         +
-        shares * last_close
+        shares
+        *
+        last_close
     )
-
-    # =====================================================
-    # 累计收益
-    # =====================================================
 
     total_return = (
         final_equity
@@ -531,14 +488,10 @@ def run_backtest(
         - 1
     ) * 100
 
-    # =====================================================
-    # 年化收益
-    # =====================================================
-
     days = (
-        data["日期"].iloc[-1]
+        df["日期"].iloc[-1]
         -
-        data["日期"].iloc[0]
+        df["日期"].iloc[0]
     ).days
 
     years = max(
@@ -552,74 +505,52 @@ def run_backtest(
             /
             initial_capital
         )
-        ** (1 / years)
+        **
+        (1 / years)
         - 1
     ) * 100
 
-    # =====================================================
-    # 买入持有
-    # =====================================================
-
-    first_open = float(
-        data.iloc[0]["开盘"]
-    )
-
-    buy_hold_return = (
-        last_close
-        /
-        first_open
-        - 1
-    ) * 100
-
-    # =====================================================
-    # 资金曲线
-    # =====================================================
-
-    equity_df = pd.DataFrame(
+    equity = pd.DataFrame(
         equity_records
     )
 
-    if equity_df.empty:
+    if equity.empty:
 
         return None
 
-    equity_df["最高资产"] = (
-        equity_df["资产"]
+    equity["最高资产"] = (
+        equity["资产"]
         .cummax()
     )
 
-    equity_df["回撤"] = (
-        equity_df["资产"]
+    equity["回撤"] = (
+        equity["资产"]
         /
-        equity_df["最高资产"]
+        equity["最高资产"]
         - 1
     )
 
     max_drawdown = (
-        equity_df["回撤"].min()
+        equity["回撤"].min()
         * 100
     )
 
-    # =====================================================
-    # Sharpe
-    # =====================================================
-
-    equity_df["日收益"] = (
-        equity_df["资产"]
+    daily_return = (
+        equity["资产"]
         .pct_change()
-        .fillna(0)
+        .dropna()
     )
 
-    daily_std = (
-        equity_df["日收益"].std()
-    )
-
-    if daily_std > 0:
+    if (
+        len(daily_return) > 10
+        and
+        daily_return.std() > 0
+    ):
 
         sharpe = (
-            equity_df["日收益"].mean()
+            daily_return.mean()
             /
-            daily_std
+            daily_return.std()
             *
             np.sqrt(252)
         )
@@ -627,10 +558,6 @@ def run_backtest(
     else:
 
         sharpe = 0
-
-    # =====================================================
-    # Calmar
-    # =====================================================
 
     if max_drawdown < 0:
 
@@ -644,110 +571,35 @@ def run_backtest(
 
         calmar = 0
 
-    # =====================================================
-    # 交易统计
-    # =====================================================
-
     trades_df = pd.DataFrame(
         trades
     )
 
-    total_trades = len(
+    trade_count = len(
         trades_df
     )
 
-    if total_trades > 0:
-
-        wins = (
-            trades_df["收益率"] > 0
-        )
+    if trade_count:
 
         win_rate = (
-            wins.mean()
+            (
+                trades_df["收益率"]
+                > 0
+            ).mean()
             * 100
         )
-
-        avg_win = (
-            trades_df.loc[
-                wins,
-                "收益率"
-            ].mean()
-            if wins.any()
-            else 0
-        )
-
-        avg_loss = (
-            abs(
-                trades_df.loc[
-                    ~wins,
-                    "收益率"
-                ].mean()
-            )
-            if (~wins).any()
-            else 0
-        )
-
-        if avg_loss > 0:
-
-            profit_loss_ratio = (
-                avg_win
-                /
-                avg_loss
-            )
-
-        else:
-
-            profit_loss_ratio = 0
 
     else:
 
         win_rate = 0
 
-        avg_win = 0
-
-        avg_loss = 0
-
-        profit_loss_ratio = 0
-
-    # =====================================================
-    # 综合评分
-    # =====================================================
-
-    # 优化目标：
-    #
-    # 收益越高越好
-    # Sharpe越高越好
-    # 最大回撤越小越好
-    #
-    # 避免单纯追求历史收益
-    # =====================================================
-
-    score = (
-        annual_return
-        +
-        sharpe * 10
-        +
-        calmar * 5
-        +
-        min(
-            total_trades,
-            30
-        ) * 0.2
-    )
-
     return {
-
-        "final_equity":
-            final_equity,
 
         "total_return":
             total_return,
 
         "annual_return":
             annual_return,
-
-        "buy_hold_return":
-            buy_hold_return,
 
         "max_drawdown":
             max_drawdown,
@@ -758,23 +610,17 @@ def run_backtest(
         "calmar":
             calmar,
 
-        "total_trades":
-            total_trades,
+        "trade_count":
+            trade_count,
 
         "win_rate":
             win_rate,
 
-        "profit_loss_ratio":
-            profit_loss_ratio,
-
-        "score":
-            score,
+        "equity":
+            equity,
 
         "trades":
-            trades_df,
-
-        "equity":
-            equity_df
+            trades_df
     }
 
 
@@ -782,96 +628,104 @@ def run_backtest(
 # 参数优化
 # =========================================================
 
-def optimize_parameters(
+def optimize(
     df,
-    asset_type,
     initial_capital,
-    commission_rate,
-    stamp_tax_rate,
-    slippage_rate,
-    position_ratio
+    commission,
+    slippage,
+    position_ratio,
+    stamp_tax
 ):
 
-    # =====================================================
-    # 参数搜索范围
-    #
-    # 控制数量，避免手机运行太慢
-    # =====================================================
+    results = []
 
-    ma_short_list = [
-        5,
-        10,
-        15
-    ]
+    combinations = itertools.product(
 
-    ma_long_list = [
-        20,
-        30,
-        40,
-        60
-    ]
+        [5, 10, 20],
 
-    volume_window_list = [
-        10,
-        20,
-        30
-    ]
+        [30, 60, 120],
 
-    parameter_results = []
+        [20, 60, 120],
 
-    # =====================================================
-    # 网格搜索
-    # =====================================================
-
-    combinations = list(
-        itertools.product(
-            ma_short_list,
-            ma_long_list,
-            volume_window_list
-        )
+        [20, 60]
     )
 
     for (
-        ma_short,
-        ma_long,
-        volume_window
+        fast,
+        slow,
+        momentum,
+        volatility
     ) in combinations:
 
-        if ma_short >= ma_long:
+        if fast >= slow:
 
             continue
 
-        test_df = calculate_indicators(
+        test = indicators(
             df,
-            ma_short,
-            ma_long,
-            volume_window
+            fast,
+            slow,
+            momentum,
+            volatility
         )
 
-        result = run_backtest(
-            test_df,
-            asset_type,
+        result = backtest(
+
+            test,
+
             initial_capital,
-            commission_rate,
-            stamp_tax_rate,
-            slippage_rate,
-            position_ratio
+
+            commission,
+
+            slippage,
+
+            position_ratio,
+
+            stamp_tax
         )
 
         if result is None:
 
             continue
 
-        parameter_results.append({
+        # -------------------------------------------------
+        # 综合评分
+        # -------------------------------------------------
 
-            "MA短周期":
-                ma_short,
+        score = (
 
-            "MA长周期":
-                ma_long,
+            result["annual_return"]
 
-            "成交量周期":
-                volume_window,
+            +
+
+            result["sharpe"] * 8
+
+            +
+
+            result["calmar"] * 4
+
+            +
+
+            min(
+                result["trade_count"],
+                20
+            ) * 0.2
+
+        )
+
+        results.append({
+
+            "MA快":
+                fast,
+
+            "MA慢":
+                slow,
+
+            "动量":
+                momentum,
+
+            "波动率":
+                volatility,
 
             "年化收益":
                 result["annual_return"],
@@ -886,62 +740,217 @@ def optimize_parameters(
                 result["calmar"],
 
             "交易次数":
-                result["total_trades"],
+                result["trade_count"],
 
             "胜率":
                 result["win_rate"],
 
-            "优化得分":
-                result["score"]
+            "评分":
+                score
         })
 
-    results_df = pd.DataFrame(
-        parameter_results
+    result_df = pd.DataFrame(
+        results
     )
 
-    if results_df.empty:
+    if result_df.empty:
 
         return None
 
-    results_df = (
-        results_df
+    result_df = (
+        result_df
         .sort_values(
-            "优化得分",
+            "评分",
             ascending=False
         )
-        .reset_index(
-            drop=True
-        )
+        .reset_index(drop=True)
     )
 
-    best = (
-        results_df.iloc[0]
-    )
+    best = result_df.iloc[0]
 
-    best_parameters = {
+    params = {
 
-        "ma_short":
-            int(best["MA短周期"]),
+        "fast":
+            int(best["MA快"]),
 
-        "ma_long":
-            int(best["MA长周期"]),
+        "slow":
+            int(best["MA慢"]),
 
-        "volume_window":
-            int(best["成交量周期"])
+        "momentum":
+            int(best["动量"]),
+
+        "volatility":
+            int(best["波动率"])
     }
 
-    return (
-        best_parameters,
-        results_df
+    return params, result_df
+
+
+# =========================================================
+# Walk Forward
+# =========================================================
+
+def walk_forward(
+    df,
+    initial_capital,
+    commission,
+    slippage,
+    position_ratio,
+    stamp_tax
+):
+
+    if len(df) < 500:
+
+        return None
+
+    results = []
+
+    window = 400
+
+    test_size = 100
+
+    start = 0
+
+    while (
+        start
+        +
+        window
+        +
+        test_size
+        <=
+        len(df)
+    ):
+
+        train = df.iloc[
+            start:
+            start + window
+        ].copy()
+
+        test = df.iloc[
+            start + window:
+            start + window + test_size
+        ].copy()
+
+        optimized = optimize(
+
+            train,
+
+            initial_capital,
+
+            commission,
+
+            slippage,
+
+            position_ratio,
+
+            stamp_tax
+        )
+
+        if optimized is None:
+
+            start += test_size
+
+            continue
+
+        params, _ = optimized
+
+        # -------------------------------------------------
+        # 指标预热
+        # -------------------------------------------------
+
+        max_window = max(
+            params["slow"],
+            params["momentum"],
+            params["volatility"],
+            120
+        )
+
+        begin = max(
+            0,
+            start + window - max_window
+        )
+
+        combined = df.iloc[
+            begin:
+            start + window + test_size
+        ].copy()
+
+        combined = indicators(
+
+            combined,
+
+            params["fast"],
+
+            params["slow"],
+
+            params["momentum"],
+
+            params["volatility"]
+        )
+
+        test_part = combined[
+            combined["日期"]
+            >=
+            test["日期"].min()
+        ].copy()
+
+        result = backtest(
+
+            test_part,
+
+            initial_capital,
+
+            commission,
+
+            slippage,
+
+            position_ratio,
+
+            stamp_tax
+        )
+
+        if result is not None:
+
+            results.append({
+
+                "测试开始":
+                    test["日期"].min(),
+
+                "测试结束":
+                    test["日期"].max(),
+
+                "年化收益":
+                    result["annual_return"],
+
+                "最大回撤":
+                    result["max_drawdown"],
+
+                "Sharpe":
+                    result["sharpe"],
+
+                "交易次数":
+                    result["trade_count"]
+            })
+
+        start += test_size
+
+    if not results:
+
+        return None
+
+    wf = pd.DataFrame(
+        results
     )
 
+    return wf
+
 
 # =========================================================
-# 选择股票 / ETF
+# 选择资产
 # =========================================================
 
-asset_type_name = st.radio(
-    "选择分析类型",
+asset_type = st.radio(
+    "选择类型",
     [
         "股票",
         "ETF"
@@ -949,7 +958,7 @@ asset_type_name = st.radio(
     horizontal=True
 )
 
-if asset_type_name == "股票":
+if asset_type == "股票":
 
     asset_key = "stock"
 
@@ -962,961 +971,625 @@ else:
     asset_list = etfs
 
 
+if asset_list.empty:
+
+    st.error(
+        "没有找到品种列表。"
+    )
+
+    st.stop()
+
+
 # =========================================================
 # 选择品种
 # =========================================================
 
-if not asset_list.empty:
+options = (
+    asset_list["code"]
+    +
+    " - "
+    +
+    asset_list["name"]
+).tolist()
 
-    options = (
-        asset_list["code"]
-        + " - "
-        + asset_list["name"]
-    ).tolist()
-
-    selected = st.selectbox(
-        "选择品种",
-        options
-    )
-
-    code = selected.split(
-        " - "
-    )[0]
-
-    asset_name = selected
-
-else:
-
-    code = st.text_input(
-        "输入代码"
-    )
-
-    asset_name = code
-
-
-# =========================================================
-# 功能
-# =========================================================
-
-function = st.radio(
-    "选择功能",
-    [
-        "技术分析",
-        "V2.2 自动优化回测"
-    ],
-    horizontal=True
+selected = st.selectbox(
+    "选择分析品种",
+    options
 )
 
-
-# =========================================================
-# 技术分析
-# =========================================================
-
-if function == "技术分析":
-
-    if st.button(
-        "🚀 开始分析",
-        type="primary"
-    ):
-
-        try:
-
-            raw_df = load_data(
-                code,
-                asset_key
-            )
-
-            df = calculate_indicators(
-                raw_df,
-                5,
-                20,
-                20
-            )
-
-        except Exception as e:
-
-            st.error(
-                "数据读取失败"
-            )
-
-            st.code(
-                str(e)
-            )
-
-            st.stop()
-
-        latest = df.iloc[-1]
-
-        st.success(
-            f"{asset_name} · "
-            f"{latest['日期'].strftime('%Y-%m-%d')}"
-        )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.metric(
-                "最新价格",
-                f"{latest['收盘']:.3f}"
-            )
-
-        with col2:
-
-            st.metric(
-                "MA5",
-                f"{latest['MA_SHORT']:.3f}"
-            )
-
-        with col3:
-
-            st.metric(
-                "MA20",
-                f"{latest['MA_LONG']:.3f}"
-            )
-
-        score = int(
-            latest["评分"]
-        )
-
-        st.subheader(
-            "🤖 当前评分"
-        )
-
-        if score == 3:
-
-            st.success(
-                "🟢 强势 · 3 / 3"
-            )
-
-        elif score == 2:
-
-            st.info(
-                "🟡 偏强 · 2 / 3"
-            )
-
-        elif score == 1:
-
-            st.warning(
-                "🟠 偏弱 · 1 / 3"
-            )
-
-        else:
-
-            st.error(
-                "🔴 弱势 · 0 / 3"
-            )
-
-        st.subheader(
-            "📈 价格与均线"
-        )
-
-        chart = df.tail(200)[
-            [
-                "日期",
-                "收盘",
-                "MA_SHORT",
-                "MA_LONG"
-            ]
-        ].set_index(
-            "日期"
-        )
-
-        st.line_chart(
-            chart
-        )
+code = selected.split(
+    " - "
+)[0]
 
 
 # =========================================================
-# V2.2 自动优化回测
+# 参数
 # =========================================================
 
-else:
+st.sidebar.header(
+    "⚙️ 回测设置"
+)
 
-    st.subheader(
-        "🧪 V2.2 自动优化回测"
-    )
+years = st.sidebar.selectbox(
+    "历史范围",
+    [3, 5, 8, 10, 0],
+    format_func=lambda x:
+        "全部历史"
+        if x == 0
+        else f"{x}年"
+)
 
-    st.info(
-        "程序先在训练集寻找参数，"
-        "然后锁定参数，在完全没有参与优化的测试集上验证。"
-    )
+initial_capital = st.sidebar.number_input(
+    "初始资金",
+    min_value=10000,
+    max_value=10000000,
+    value=100000,
+    step=10000
+)
 
-    # -----------------------------------------------------
-    # 回测周期
-    # -----------------------------------------------------
-
-    years = st.selectbox(
-        "📅 回测周期",
-        [
-            1,
-            2,
-            3,
-            5,
-            8,
-            10,
-            0
-        ],
-        format_func=lambda x:
-            "全部历史"
-            if x == 0
-            else f"{x} 年"
-    )
-
-    # -----------------------------------------------------
-    # 训练集比例
-    # -----------------------------------------------------
-
-    train_percent = st.select_slider(
-        "🧪 训练集比例",
-        options=[
-            50,
-            60,
-            70,
-            80
-        ],
-        value=70
-    )
-
-    st.caption(
-        f"训练集 {train_percent}% · "
-        f"测试集 {100-train_percent}%"
-    )
-
-    # -----------------------------------------------------
-    # 初始资金
-    # -----------------------------------------------------
-
-    initial_capital = st.number_input(
-        "💰 初始资金",
-        min_value=10000,
-        max_value=10000000,
-        value=100000,
-        step=10000
-    )
-
-    # -----------------------------------------------------
-    # 仓位
-    # -----------------------------------------------------
-
-    position_percent = st.slider(
-        "📌 单次最大仓位 %",
+position_ratio = (
+    st.sidebar.slider(
+        "最大仓位 %",
         10,
         100,
         95,
         5
     )
+    / 100
+)
 
-    position_ratio = (
-        position_percent / 100
+commission = (
+    st.sidebar.number_input(
+        "佣金 %",
+        0.0,
+        0.5,
+        0.03,
+        0.01
     )
+    / 100
+)
 
-    # -----------------------------------------------------
-    # 滑点
-    # -----------------------------------------------------
-
-    slippage_percent = st.number_input(
-        "📉 滑点 %",
-        min_value=0.0,
-        max_value=2.0,
-        value=0.10,
-        step=0.01
+slippage = (
+    st.sidebar.number_input(
+        "滑点 %",
+        0.0,
+        2.0,
+        0.10,
+        0.01
     )
+    / 100
+)
 
-    slippage_rate = (
-        slippage_percent / 100
-    )
+if asset_key == "stock":
 
-    # -----------------------------------------------------
-    # 佣金
-    # -----------------------------------------------------
-
-    commission_percent = st.number_input(
-        "💵 佣金 %",
-        min_value=0.0,
-        max_value=0.5,
-        value=0.03,
-        step=0.01
-    )
-
-    commission_rate = (
-        commission_percent / 100
-    )
-
-    # -----------------------------------------------------
-    # 印花税
-    # -----------------------------------------------------
-
-    if asset_key == "stock":
-
-        stamp_tax_percent = st.number_input(
-            "🏦 股票卖出印花税 %",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.05,
-            step=0.01
+    stamp_tax = (
+        st.sidebar.number_input(
+            "印花税 %",
+            0.0,
+            1.0,
+            0.05,
+            0.01
         )
+        / 100
+    )
+
+else:
+
+    stamp_tax = 0
+
+
+# =========================================================
+# 开始分析
+# =========================================================
+
+if st.button(
+    "🚀 开始量化分析",
+    type="primary",
+    use_container_width=True
+):
+
+    try:
+
+        raw = load_data(
+            code,
+            asset_key
+        )
+
+    except Exception as e:
+
+        st.error(
+            "数据读取失败"
+        )
+
+        st.code(
+            str(e)
+        )
+
+        st.stop()
+
+    # -----------------------------------------------------
+    # 历史区间
+    # -----------------------------------------------------
+
+    end_date = raw["日期"].max()
+
+    if years == 0:
+
+        start_date = raw["日期"].min()
 
     else:
 
-        stamp_tax_percent = 0.0
-
-        st.info(
-            "ETF不计算股票印花税。"
+        start_date = (
+            end_date
+            -
+            pd.DateOffset(
+                years=years
+            )
         )
 
-    stamp_tax_rate = (
-        stamp_tax_percent / 100
+    df = raw[
+        raw["日期"] >= start_date
+    ].copy()
+
+    if len(df) < 300:
+
+        st.error(
+            "有效历史数据不足300个交易日。"
+        )
+
+        st.stop()
+
+    # -----------------------------------------------------
+    # 训练测试
+    # -----------------------------------------------------
+
+    split = int(
+        len(df) * 0.7
+    )
+
+    train = df.iloc[
+        :split
+    ].copy()
+
+    test = df.iloc[
+        split:
+    ].copy()
+
+    st.subheader(
+        "① 训练集自动优化"
+    )
+
+    result = optimize(
+
+        train,
+
+        initial_capital,
+
+        commission,
+
+        slippage,
+
+        position_ratio,
+
+        stamp_tax
+    )
+
+    if result is None:
+
+        st.error(
+            "没有找到有效参数。"
+        )
+
+        st.stop()
+
+    params, ranking = result
+
+    cols = st.columns(4)
+
+    with cols[0]:
+
+        st.metric(
+            "MA快",
+            params["fast"]
+        )
+
+    with cols[1]:
+
+        st.metric(
+            "MA慢",
+            params["slow"]
+        )
+
+    with cols[2]:
+
+        st.metric(
+            "动量",
+            params["momentum"]
+        )
+
+    with cols[3]:
+
+        st.metric(
+            "波动率",
+            params["volatility"]
+        )
+
+    # -----------------------------------------------------
+    # 训练结果
+    # -----------------------------------------------------
+
+    train_ind = indicators(
+
+        train,
+
+        params["fast"],
+
+        params["slow"],
+
+        params["momentum"],
+
+        params["volatility"]
+    )
+
+    train_result = backtest(
+
+        train_ind,
+
+        initial_capital,
+
+        commission,
+
+        slippage,
+
+        position_ratio,
+
+        stamp_tax
     )
 
     # -----------------------------------------------------
-    # 开始
+    # 测试集指标预热
     # -----------------------------------------------------
 
-    if st.button(
-        "🤖 开始自动优化 + 样本外测试",
-        type="primary"
-    ):
+    warmup = max(
+        params["slow"],
+        params["momentum"],
+        params["volatility"],
+        120
+    )
 
-        try:
+    test_start = max(
+        0,
+        split - warmup
+    )
 
-            raw_df = load_data(
-                code,
-                asset_key
-            )
+    combined = df.iloc[
+        test_start:
+    ].copy()
 
-        except Exception as e:
+    combined = indicators(
 
-            st.error(
-                "读取数据失败"
-            )
+        combined,
 
-            st.code(
-                str(e)
-            )
+        params["fast"],
 
-            st.stop()
+        params["slow"],
 
-        # =================================================
-        # 选择历史区间
-        # =================================================
+        params["momentum"],
 
-        end_date = (
-            raw_df["日期"].max()
+        params["volatility"]
+    )
+
+    test = combined[
+        combined["日期"]
+        >=
+        df.iloc[split]["日期"]
+    ].copy()
+
+    # -----------------------------------------------------
+    # 测试
+    # -----------------------------------------------------
+
+    st.subheader(
+        "② 完全样本外测试"
+    )
+
+    test_result = backtest(
+
+        test,
+
+        initial_capital,
+
+        commission,
+
+        slippage,
+
+        position_ratio,
+
+        stamp_tax
+    )
+
+    if test_result is None:
+
+        st.error(
+            "测试集回测失败。"
         )
 
-        if years == 0:
+        st.stop()
 
-            start_date = (
-                raw_df["日期"].min()
-            )
+    comparison = pd.DataFrame({
 
-        else:
-
-            start_date = (
-                end_date
-                -
-                pd.DateOffset(
-                    years=years
-                )
-            )
-
-        period_df = raw_df[
-            raw_df["日期"] >= start_date
-        ].copy()
-
-        period_df = (
-            period_df
-            .reset_index(
-                drop=True
-            )
-        )
-
-        if len(period_df) < 100:
-
-            st.error(
-                "历史数据不足100个交易日，"
-                "无法进行可靠的训练/测试。"
-            )
-
-            st.stop()
-
-        # =================================================
-        # 时间切分
-        #
-        # 非随机切分
-        #
-        # 前70%训练
-        # 后30%测试
-        #
-        # 防止未来数据泄漏
-        # =================================================
-
-        split_index = int(
-            len(period_df)
-            * train_percent
-            / 100
-        )
-
-        train_df = (
-            period_df.iloc[
-                :split_index
-            ]
-            .copy()
-        )
-
-        test_df = (
-            period_df.iloc[
-                split_index:
-            ]
-            .copy()
-        )
-
-        # =================================================
-        # 训练集参数优化
-        # =================================================
-
-        st.subheader(
-            "🔍 第一步：训练集自动优化"
-        )
-
-        progress = st.progress(
-            0
-        )
-
-        combinations_count = (
-            3 * 4 * 3
-        )
-
-        progress.progress(
-            5
-        )
-
-        optimization = (
-            optimize_parameters(
-
-                train_df,
-
-                asset_key,
-
-                initial_capital,
-
-                commission_rate,
-
-                stamp_tax_rate,
-
-                slippage_rate,
-
-                position_ratio
-            )
-        )
-
-        progress.progress(
-            100
-        )
-
-        if optimization is None:
-
-            st.error(
-                "没有找到有效参数组合。"
-            )
-
-            st.stop()
-
-        (
-            best_parameters,
-            optimization_df
-        ) = optimization
-
-        # =================================================
-        # 最佳参数
-        # =================================================
-
-        st.success(
-            "训练集参数优化完成。"
-        )
-
-        st.write(
-            "### 🏆 最佳参数"
-        )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.metric(
-                "MA短周期",
-                best_parameters[
-                    "ma_short"
-                ]
-            )
-
-        with col2:
-
-            st.metric(
-                "MA长周期",
-                best_parameters[
-                    "ma_long"
-                ]
-            )
-
-        with col3:
-
-            st.metric(
-                "成交量周期",
-                best_parameters[
-                    "volume_window"
-                ]
-            )
-
-        # =================================================
-        # 训练集结果
-        # =================================================
-
-        train_indicators = (
-            calculate_indicators(
-                train_df,
-                best_parameters[
-                    "ma_short"
-                ],
-                best_parameters[
-                    "ma_long"
-                ],
-                best_parameters[
-                    "volume_window"
-                ]
-            )
-        )
-
-        train_result = run_backtest(
-            train_indicators,
-            asset_key,
-            initial_capital,
-            commission_rate,
-            stamp_tax_rate,
-            slippage_rate,
-            position_ratio
-        )
-
-        # =================================================
-        # 测试集
-        #
-        # 非常重要：
-        #
-        # 这里使用已经锁定的参数。
-        #
-        # 不再优化。
-        # =================================================
-
-        st.subheader(
-            "🧪 第二步：完全独立测试集"
-        )
-
-        test_indicators = (
-            calculate_indicators(
-                test_df,
-                best_parameters[
-                    "ma_short"
-                ],
-                best_parameters[
-                    "ma_long"
-                ],
-                best_parameters[
-                    "volume_window"
-                ]
-            )
-        )
-
-        test_result = run_backtest(
-            test_indicators,
-            asset_key,
-            initial_capital,
-            commission_rate,
-            stamp_tax_rate,
-            slippage_rate,
-            position_ratio
-        )
-
-        if (
-            train_result is None
-            or test_result is None
-        ):
-
-            st.error(
-                "训练集或测试集无法完成回测。"
-            )
-
-            st.stop()
-
-        st.success(
-            "测试集完成。测试集没有参与参数优化。"
-        )
-
-        # =================================================
-        # 训练 / 测试对比
-        # =================================================
-
-        st.subheader(
-            "📊 训练集 vs 测试集"
-        )
-
-        comparison = pd.DataFrame({
-
-            "指标": [
-                "累计收益",
-                "年化收益",
-                "最大回撤",
-                "Sharpe",
-                "Calmar",
-                "交易次数",
-                "胜率",
-                "盈亏比"
-            ],
-
-            "训练集": [
-
-                f"{train_result['total_return']:.2f}%",
-
-                f"{train_result['annual_return']:.2f}%",
-
-                f"{train_result['max_drawdown']:.2f}%",
-
-                f"{train_result['sharpe']:.2f}",
-
-                f"{train_result['calmar']:.2f}",
-
-                train_result["total_trades"],
-
-                f"{train_result['win_rate']:.2f}%",
-
-                f"{train_result['profit_loss_ratio']:.2f}"
-            ],
-
-            "测试集": [
-
-                f"{test_result['total_return']:.2f}%",
-
-                f"{test_result['annual_return']:.2f}%",
-
-                f"{test_result['max_drawdown']:.2f}%",
-
-                f"{test_result['sharpe']:.2f}",
-
-                f"{test_result['calmar']:.2f}",
-
-                test_result["total_trades"],
-
-                f"{test_result['win_rate']:.2f}%",
-
-                f"{test_result['profit_loss_ratio']:.2f}"
-            ]
-        })
-
-        st.dataframe(
-            comparison,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        # =================================================
-        # 测试集核心结果
-        # =================================================
-
-        st.subheader(
-            "🎯 最重要：测试集真实表现"
-        )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.metric(
-                "测试集累计收益",
-                f"{test_result['total_return']:.2f}%"
-            )
-
-        with col2:
-
-            st.metric(
-                "测试集年化收益",
-                f"{test_result['annual_return']:.2f}%"
-            )
-
-        with col3:
-
-            st.metric(
-                "测试集最大回撤",
-                f"{test_result['max_drawdown']:.2f}%"
-            )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.metric(
-                "测试集Sharpe",
-                f"{test_result['sharpe']:.2f}"
-            )
-
-        with col2:
-
-            st.metric(
-                "测试集胜率",
-                f"{test_result['win_rate']:.2f}%"
-            )
-
-        with col3:
-
-            st.metric(
-                "测试集盈亏比",
-                f"{test_result['profit_loss_ratio']:.2f}"
-            )
-
-        # =================================================
-        # 买入持有
-        # =================================================
-
-        st.subheader(
-            "📌 测试集 vs 买入持有"
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            st.metric(
-                "策略",
-                f"{test_result['total_return']:.2f}%"
-            )
-
-        with col2:
-
-            st.metric(
-                "买入持有",
-                f"{test_result['buy_hold_return']:.2f}%"
-            )
-
-        if (
-            test_result["total_return"]
-            >
-            test_result["buy_hold_return"]
-        ):
-
-            st.success(
-                "🟢 测试集策略跑赢同期买入持有。"
-            )
-
-        else:
-
-            st.warning(
-                "🟡 测试集策略没有跑赢同期买入持有。"
-            )
-
-        # =================================================
-        # 过拟合检查
-        # =================================================
-
-        st.subheader(
-            "🔬 简单过拟合检查"
-        )
-
-        train_return = (
-            train_result["annual_return"]
-        )
-
-        test_return = (
-            test_result["annual_return"]
-        )
-
-        if train_return != 0:
-
-            degradation = (
-                1
-                -
-                test_return
-                /
-                train_return
-            ) * 100
-
-        else:
-
-            degradation = 0
-
-        st.metric(
-            "测试集年化收益相对训练集变化",
-            f"{-degradation:.2f}%"
-        )
-
-        if (
-            test_return > 0
-            and
-            test_result["sharpe"] > 0.5
-        ):
-
-            st.success(
-                "🟢 测试集仍保持正收益，"
-                "初步说明参数具有一定样本外稳定性。"
-            )
-
-        elif test_return > 0:
-
-            st.info(
-                "🟡 测试集仍盈利，"
-                "但风险调整收益一般。"
-            )
-
-        else:
-
-            st.error(
-                "🔴 测试集亏损。"
-                "模型可能存在过拟合或策略本身没有优势。"
-            )
-
-        # =================================================
-        # 测试集资金曲线
-        # =================================================
-
-        st.subheader(
-            "📈 测试集资金曲线"
-        )
-
-        test_equity_chart = (
-            test_result["equity"][
-                [
-                    "日期",
-                    "资产"
-                ]
-            ]
-            .set_index("日期")
-        )
-
-        st.line_chart(
-            test_equity_chart
-        )
-
-        # =================================================
-        # 测试集回撤
-        # =================================================
-
-        st.subheader(
-            "📉 测试集回撤"
-        )
-
-        drawdown_chart = (
-            test_result["equity"][
-                [
-                    "日期",
-                    "回撤"
-                ]
-            ]
-            .set_index("日期")
-        )
-
-        st.line_chart(
-            drawdown_chart
-        )
-
-        # =================================================
-        # 最佳参数排行榜
-        # =================================================
-
-        st.subheader(
-            "🏆 训练集参数排行榜"
-        )
-
-        ranking = (
-            optimization_df
-            .head(10)
-            .copy()
-        )
-
-        for col in [
+        "指标": [
+            "累计收益",
             "年化收益",
             "最大回撤",
             "Sharpe",
             "Calmar",
-            "胜率",
-            "优化得分"
-        ]:
+            "交易次数",
+            "胜率"
+        ],
 
-            ranking[col] = (
-                ranking[col]
-                .round(2)
+        "训练集": [
+
+            f"{train_result['total_return']:.2f}%",
+
+            f"{train_result['annual_return']:.2f}%",
+
+            f"{train_result['max_drawdown']:.2f}%",
+
+            f"{train_result['sharpe']:.2f}",
+
+            f"{train_result['calmar']:.2f}",
+
+            train_result["trade_count"],
+
+            f"{train_result['win_rate']:.2f}%"
+        ],
+
+        "测试集": [
+
+            f"{test_result['total_return']:.2f}%",
+
+            f"{test_result['annual_return']:.2f}%",
+
+            f"{test_result['max_drawdown']:.2f}%",
+
+            f"{test_result['sharpe']:.2f}",
+
+            f"{test_result['calmar']:.2f}",
+
+            test_result["trade_count"],
+
+            f"{test_result['win_rate']:.2f}%"
+        ]
+    })
+
+    st.dataframe(
+        comparison,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # -----------------------------------------------------
+    # 核心结果
+    # -----------------------------------------------------
+
+    st.subheader(
+        "③ 测试集真实表现"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+
+        st.metric(
+            "年化收益",
+            f"{test_result['annual_return']:.2f}%"
+        )
+
+    with c2:
+
+        st.metric(
+            "最大回撤",
+            f"{test_result['max_drawdown']:.2f}%"
+        )
+
+    with c3:
+
+        st.metric(
+            "Sharpe",
+            f"{test_result['sharpe']:.2f}"
+        )
+
+    with c4:
+
+        st.metric(
+            "胜率",
+            f"{test_result['win_rate']:.2f}%"
+        )
+
+    # -----------------------------------------------------
+    # Walk Forward
+    # -----------------------------------------------------
+
+    st.subheader(
+        "④ Walk-Forward 滚动验证"
+    )
+
+    wf = walk_forward(
+
+        df,
+
+        initial_capital,
+
+        commission,
+
+        slippage,
+
+        position_ratio,
+
+        stamp_tax
+    )
+
+    if wf is None:
+
+        st.warning(
+            "历史数据不足，无法进行Walk-Forward。"
+        )
+
+    else:
+
+        avg_return = (
+            wf["年化收益"].mean()
+        )
+
+        positive_rate = (
+            (
+                wf["年化收益"] > 0
+            ).mean()
+            * 100
+        )
+
+        avg_drawdown = (
+            wf["最大回撤"].mean()
+        )
+
+        wc1, wc2, wc3 = st.columns(3)
+
+        with wc1:
+
+            st.metric(
+                "平均年化",
+                f"{avg_return:.2f}%"
+            )
+
+        with wc2:
+
+            st.metric(
+                "盈利窗口比例",
+                f"{positive_rate:.1f}%"
+            )
+
+        with wc3:
+
+            st.metric(
+                "平均最大回撤",
+                f"{avg_drawdown:.2f}%"
             )
 
         st.dataframe(
-            ranking,
+            wf,
             use_container_width=True,
             hide_index=True
         )
 
-        # =================================================
-        # 测试交易
-        # =================================================
+    # -----------------------------------------------------
+    # 资金曲线
+    # -----------------------------------------------------
 
-        st.subheader(
-            "📋 测试集交易记录"
+    st.subheader(
+        "⑤ 测试集资金曲线"
+    )
+
+    chart = (
+        test_result["equity"][
+            [
+                "日期",
+                "资产"
+            ]
+        ]
+        .set_index("日期")
+    )
+
+    st.line_chart(
+        chart
+    )
+
+    # -----------------------------------------------------
+    # 参数排行榜
+    # -----------------------------------------------------
+
+    st.subheader(
+        "⑥ 训练集参数排行榜"
+    )
+
+    display = ranking.head(10).copy()
+
+    for col in [
+        "年化收益",
+        "最大回撤",
+        "Sharpe",
+        "Calmar",
+        "胜率",
+        "评分"
+    ]:
+
+        display[col] = (
+            display[col]
+            .round(2)
         )
 
-        if test_result[
-            "trades"
-        ].empty:
+    st.dataframe(
+        display,
+        use_container_width=True,
+        hide_index=True
+    )
 
-            st.warning(
-                "测试集没有完成交易。"
+    # -----------------------------------------------------
+    # 交易记录
+    # -----------------------------------------------------
+
+    st.subheader(
+        "⑦ 测试集交易记录"
+    )
+
+    if test_result[
+        "trades"
+    ].empty:
+
+        st.info(
+            "测试集没有完成交易。"
+        )
+
+    else:
+
+        trades = (
+            test_result[
+                "trades"
+            ].copy()
+        )
+
+        for col in [
+            "买入价格",
+            "卖出价格",
+            "收益率"
+        ]:
+
+            trades[col] = (
+                trades[col]
+                .round(3)
             )
 
-        else:
-
-            trades_display = (
-                test_result[
-                    "trades"
-                ].copy()
-            )
-
-            trades_display[
-                "收益率"
-            ] = trades_display[
-                "收益率"
-            ].round(2)
-
-            trades_display[
-                "买入价格"
-            ] = trades_display[
-                "买入价格"
-            ].round(3)
-
-            trades_display[
-                "卖出价格"
-            ] = trades_display[
-                "卖出价格"
-            ].round(3)
-
-            st.dataframe(
-                trades_display,
-                use_container_width=True,
-                hide_index=True
-            )
+        st.dataframe(
+            trades,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 # =========================================================
-# 底部说明
+# 说明
 # =========================================================
 
 st.divider()
 
 st.caption(
-    "V2.2采用时间顺序训练/测试切分。"
-    "参数只允许使用训练集历史数据确定。"
+    "V3.0数据层：东方财富主接口 + 腾讯备用接口。"
 )
 
 st.caption(
-    "测试集完全不参与参数搜索，"
-    "用于检查模型样本外表现。"
+    "V3.0模型：训练集优化 + 样本外测试 + Walk-Forward。"
 )
 
 st.caption(
-    "⚠️ 历史回测不代表未来收益。"
-    "本程序仅用于量化研究和学习，"
-    "不构成投资建议。"
+    "历史回测不代表未来收益，仅用于量化研究。"
 )
