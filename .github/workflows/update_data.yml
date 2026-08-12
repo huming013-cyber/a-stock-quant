@@ -1,72 +1,49 @@
 name: Update A Stock and ETF Data
 
 on:
+
   workflow_dispatch:
 
   schedule:
-    # 新加坡/北京时间 18:30
-    - cron: "30 10 * * 1-5"
+    - cron: "30 8 * * 1-5"
 
-# ⭐ 允许 GitHub Actions 写入仓库
 permissions:
   contents: write
 
 jobs:
+
   update-data:
 
     runs-on: ubuntu-latest
 
     steps:
 
-      # ================================================
-      # 获取代码
-      # ================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      # ================================================
-      # 设置 Python
-      # ================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ================================================
-      # 安装依赖
-      # ================================================
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests
-
-      # ================================================
-      # 更新股票 + ETF
-      # ================================================
+          pip install -r requirements.txt
 
       - name: Update stock and ETF data
         run: |
           python update_data.py
 
-      # ================================================
-      # 保存数据
-      # ================================================
-
       - name: Commit updated data
         run: |
 
-          git config user.name "github-actions[bot]"
+          git config user.name "github-actions"
 
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add data/
 
-          if git diff --cached --quiet; then
-            echo "没有新的行情数据需要提交"
-          else
-            git commit -m "Auto update stock and ETF data"
-            git push
-          fi
+          git diff --cached --quiet || git commit -m "Update market data"
+
+          git push
