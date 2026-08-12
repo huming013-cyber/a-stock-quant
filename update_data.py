@@ -1,10 +1,8 @@
 import os
 import sys
 import time
-import traceback
-
+import requests
 import pandas as pd
-import akshare as ak
 
 
 # =========================================================
@@ -14,19 +12,67 @@ import akshare as ak
 DATA_DIR = "data"
 
 STOCK_LIST = "stock_list.csv"
-
 ETF_LIST = "etf_list.csv"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
+TODAY = pd.Timestamp.now().strftime("%Y%m%d")
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/120 Safari/537.36"
+    )
+}
+
 
 # =========================================================
-# 统一输出
+# 输出
 # =========================================================
 
-def log(message):
+def log(text):
+    print(text, flush=True)
 
-    print(message, flush=True)
+
+# =========================================================
+# 判断市场
+# =========================================================
+
+def get_market(code):
+
+    code = str(code).zfill(6)
+
+    # 上海
+    if (
+        code.startswith("6")
+        or code.startswith("68")
+        or code.startswith("5")
+    ):
+        return 1
+
+    # 深圳
+    if (
+        code.startswith("0")
+        or code.startswith("3")
+        or code.startswith("159")
+    ):
+        return 0
+
+    # 默认深圳
+    return 0
+
+
+def get_tencent_prefix(code):
+
+    market = get_market(code)
+
+    if market == 1:
+        return "sh"
+
+    return "sz"
 
 
 # =========================================================
@@ -35,43 +81,23 @@ def log(message):
 
 def load_list(filename):
 
-    log("")
-    log("=" * 60)
-    log(f"读取列表：{filename}")
-    log("=" * 60)
-
     if not os.path.exists(filename):
 
-        log(f"❌ 文件不存在：{filename}")
+        log(f"❌ 找不到 {filename}")
 
         return pd.DataFrame(
             columns=["code", "name"]
         )
 
-    try:
-
-        df = pd.read_csv(
-            filename,
-            dtype={"code": str}
-        )
-
-    except Exception as e:
-
-        log(f"❌ 读取失败：{filename}")
-        log(str(e))
-
-        return pd.DataFrame(
-            columns=["code", "name"]
-        )
+    df = pd.read_csv(
+        filename,
+        dtype={"code": str}
+    )
 
     if "code" not in df.columns:
 
-        log(
-            f"❌ {filename} 缺少 code 列"
-        )
-
-        return pd.DataFrame(
-            columns=["code", "name"]
+        raise ValueError(
+            f"{filename} 缺少 code 列"
         )
 
     if "name" not in df.columns:
@@ -98,155 +124,236 @@ def load_list(filename):
         subset=["code"]
     )
 
-    df = df.reset_index(
-        drop=True
-    )
-
-    log(
-        f"✅ 共发现 {len(df)} 个品种"
-    )
-
-    return df
+    return df.reset_index(drop=True)
 
 
 # =========================================================
-# 数据清洗
+# 东方财富接口
+# =========================================================
+
+def fetch_eastmoney(code):
+
+    market = get_market(code)
+
+    secid = f"{market}.{code}"
+
+    url = (
+        "https://push2his.eastmoney.com/"
+        "api/qt/stock/kline/get"
+    )
+
+    params = {
+
+        "secid": secid,
+
+        "fields1":
+            "f1,f2,f3,f4,f5,f6",
+
+        "fields2":
+            "f51,f52,f53,f54,f55,"
+            "f56,f57,f58,f59,f60,f61",
+
+        "klt": "101",
+
+        # 前复权
+        "fqt": "1",
+
+        "beg": "0",
+
+        "end": "20500000",
+
+        "lmt": "5000"
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        headers=HEADERS,
+        timeout=20
+    )
+
+    response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get("data"):
+
+        raise ValueError(
+            "东方财富没有返回data"
+        )
+
+    klines = result["data"].get(
+        "klines"
+    )
+
+    if not klines:
+
+        raise ValueError(
+            "东方财富没有返回K线"
+        )
+
+    rows = []
+
+    for item in klines:
+
+        parts = item.split(",")
+
+        if len(parts) < 7:
+            continue
+
+        rows.append({
+
+            "日期": parts[0],
+
+            "开盘": parts[1],
+
+            "收盘": parts[2],
+
+            "最高": parts[3],
+
+            "最低": parts[4],
+
+            "成交量": parts[5],
+
+            "成交额": parts[6]
+        })
+
+    if not rows:
+
+        raise ValueError(
+            "东方财富K线解析失败"
+        )
+
+    return pd.DataFrame(rows)
+
+
+# =========================================================
+# 腾讯备用接口
+# =========================================================
+
+def fetch_tencent(code):
+
+    prefix = get_tencent_prefix(code)
+
+    symbol = prefix + code
+
+    url = (
+        "https://web.ifzq.gtimg.cn/"
+        "appstock/app/fqkline/get"
+    )
+
+    params = {
+
+        "_var": "kline_dayqfq",
+
+        "param":
+            f"{symbol},day,,,5000,qfqa"
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        headers=HEADERS,
+        timeout=20
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    stock_data = (
+        data
+        .get("data", {})
+        .get(symbol, {})
+    )
+
+    rows = (
+        stock_data.get("qfqday")
+        or stock_data.get("day")
+        or []
+    )
+
+    if not rows:
+
+        raise ValueError(
+            "腾讯没有返回K线"
+        )
+
+    result = []
+
+    for item in rows:
+
+        if len(item) < 6:
+            continue
+
+        result.append({
+
+            "日期": item[0],
+
+            "开盘": item[1],
+
+            "收盘": item[2],
+
+            "最高": item[3],
+
+            "最低": item[4],
+
+            "成交量": item[5]
+        })
+
+    if not result:
+
+        raise ValueError(
+            "腾讯K线解析失败"
+        )
+
+    return pd.DataFrame(result)
+
+
+# =========================================================
+# 数据标准化
 # =========================================================
 
 def clean_data(df):
 
-    if df is None:
-
-        raise ValueError(
-            "下载结果为空"
-        )
-
-    if df.empty:
-
-        raise ValueError(
-            "下载结果为空"
-        )
-
-    # -----------------------------------------------------
-    # 自动识别列名
-    # -----------------------------------------------------
-
-    column_mapping = {}
-
-    possible_columns = {
-
-        "日期": [
-            "日期",
-            "date",
-            "Date"
-        ],
-
-        "开盘": [
-            "开盘",
-            "开盘价",
-            "open",
-            "Open"
-        ],
-
-        "最高": [
-            "最高",
-            "最高价",
-            "high",
-            "High"
-        ],
-
-        "最低": [
-            "最低",
-            "最低价",
-            "low",
-            "Low"
-        ],
-
-        "收盘": [
-            "收盘",
-            "收盘价",
-            "close",
-            "Close"
-        ],
-
-        "成交量": [
-            "成交量",
-            "volume",
-            "Volume"
-        ]
-    }
-
-    for standard_name, names in possible_columns.items():
-
-        for name in names:
-
-            if name in df.columns:
-
-                column_mapping[name] = standard_name
-
-                break
-
-    df = df.rename(
-        columns=column_mapping
-    )
-
-    required_columns = [
+    required = [
         "日期",
         "开盘",
+        "收盘",
         "最高",
         "最低",
-        "收盘",
         "成交量"
     ]
 
-    missing_columns = [
-        col
-        for col in required_columns
-        if col not in df.columns
-    ]
+    for col in required:
 
-    if missing_columns:
+        if col not in df.columns:
 
-        raise ValueError(
-            "缺少必要字段："
-            + ", ".join(missing_columns)
-        )
+            raise ValueError(
+                f"缺少字段：{col}"
+            )
 
     df = df[
-        required_columns
+        required
     ].copy()
-
-    # -----------------------------------------------------
-    # 日期
-    # -----------------------------------------------------
 
     df["日期"] = pd.to_datetime(
         df["日期"],
         errors="coerce"
     )
 
-    # -----------------------------------------------------
-    # 数值
-    # -----------------------------------------------------
-
-    number_columns = [
+    for col in [
         "开盘",
+        "收盘",
         "最高",
         "最低",
-        "收盘",
         "成交量"
-    ]
-
-    for col in number_columns:
+    ]:
 
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce"
         )
-
-    # -----------------------------------------------------
-    # 删除无效数据
-    # -----------------------------------------------------
 
     df = df.dropna(
         subset=[
@@ -256,27 +363,15 @@ def clean_data(df):
         ]
     )
 
-    # -----------------------------------------------------
-    # 删除价格 <= 0
-    # -----------------------------------------------------
-
     df = df[
         (df["开盘"] > 0)
         &
         (df["收盘"] > 0)
     ]
 
-    # -----------------------------------------------------
-    # 排序
-    # -----------------------------------------------------
-
     df = df.sort_values(
         "日期"
     )
-
-    # -----------------------------------------------------
-    # 删除重复日期
-    # -----------------------------------------------------
 
     df = df.drop_duplicates(
         subset=["日期"],
@@ -287,91 +382,94 @@ def clean_data(df):
         drop=True
     )
 
-    if df.empty:
+    if len(df) < 60:
 
         raise ValueError(
-            "清洗后没有有效数据"
+            f"有效数据只有 {len(df)} 条"
         )
 
     return df
 
 
 # =========================================================
-# 下载股票
+# 下载单个品种
 # =========================================================
 
-def download_stock(code):
+def fetch_data(code):
 
-    log(
-        f"📥 正在下载股票：{code}"
-    )
+    east_error = None
+
+    # -----------------------------------------------------
+    # 第一数据源：东方财富
+    # -----------------------------------------------------
 
     try:
 
-        df = ak.stock_zh_a_hist(
-            symbol=code,
-            period="daily",
-            start_date="20000101",
-            end_date=pd.Timestamp.now().strftime(
-                "%Y%m%d"
-            ),
-            adjust="qfq"
+        log(
+            f"   → 东方财富：{code}"
         )
 
-        return df
+        df = fetch_eastmoney(
+            code
+        )
+
+        df = clean_data(
+            df
+        )
+
+        log(
+            f"   ✅ 东方财富成功：{len(df)}条"
+        )
+
+        return df, "东方财富"
+
+    except Exception as e:
+
+        east_error = str(e)
+
+        log(
+            f"   ⚠️ 东方财富失败：{e}"
+        )
+
+    # -----------------------------------------------------
+    # 第二数据源：腾讯
+    # -----------------------------------------------------
+
+    try:
+
+        log(
+            f"   → 腾讯备用接口：{code}"
+        )
+
+        df = fetch_tencent(
+            code
+        )
+
+        df = clean_data(
+            df
+        )
+
+        log(
+            f"   ✅ 腾讯备用成功：{len(df)}条"
+        )
+
+        return df, "腾讯"
 
     except Exception as e:
 
         log(
-            f"❌ 股票 {code} 下载失败"
+            f"   ❌ 腾讯也失败：{e}"
         )
 
-        log(
-            str(e)
+        raise RuntimeError(
+            f"两个数据源都失败。"
+            f"东方财富：{east_error}；"
+            f"腾讯：{e}"
         )
-
-        return None
 
 
 # =========================================================
-# 下载ETF
-# =========================================================
-
-def download_etf(code):
-
-    log(
-        f"📥 正在下载ETF：{code}"
-    )
-
-    try:
-
-        df = ak.fund_etf_hist_em(
-            symbol=code,
-            period="daily",
-            start_date="20000101",
-            end_date=pd.Timestamp.now().strftime(
-                "%Y%m%d"
-            ),
-            adjust=""
-        )
-
-        return df
-
-    except Exception as e:
-
-        log(
-            f"❌ ETF {code} 下载失败"
-        )
-
-        log(
-            str(e)
-        )
-
-        return None
-
-
-# =========================================================
-# 保存数据
+# 保存
 # =========================================================
 
 def save_data(
@@ -395,7 +493,7 @@ def save_data(
 
 
 # =========================================================
-# 更新单个品种
+# 更新一个品种
 # =========================================================
 
 def update_one(
@@ -405,64 +503,18 @@ def update_one(
 ):
 
     log("")
-    log("-" * 60)
+    log("=" * 60)
+
     log(
-        f"开始处理：{code} - {name}"
+        f"📌 {asset_type.upper()} "
+        f"{code} - {name}"
     )
-    log(
-        f"类型：{asset_type}"
-    )
-    log("-" * 60)
 
     try:
 
-        # -------------------------------------------------
-        # 下载
-        # -------------------------------------------------
-
-        if asset_type == "stock":
-
-            raw_df = download_stock(
-                code
-            )
-
-        else:
-
-            raw_df = download_etf(
-                code
-            )
-
-        # -------------------------------------------------
-        # 下载失败
-        # -------------------------------------------------
-
-        if raw_df is None:
-
-            raise ValueError(
-                "API没有返回有效数据"
-            )
-
-        # -------------------------------------------------
-        # 清洗
-        # -------------------------------------------------
-
-        df = clean_data(
-            raw_df
+        df, source = fetch_data(
+            code
         )
-
-        # -------------------------------------------------
-        # 数据量检查
-        # -------------------------------------------------
-
-        if len(df) < 30:
-
-            raise ValueError(
-                f"有效数据只有 {len(df)} 条，数量太少"
-            )
-
-        # -------------------------------------------------
-        # 保存
-        # -------------------------------------------------
 
         filename = save_data(
             df,
@@ -470,114 +522,46 @@ def update_one(
             code
         )
 
-        # -------------------------------------------------
-        # 检查保存结果
-        # -------------------------------------------------
-
-        if not os.path.exists(
-            filename
-        ):
-
-            raise ValueError(
-                "CSV文件保存失败"
-            )
-
-        # -------------------------------------------------
-        # 输出结果
-        # -------------------------------------------------
-
         first_date = (
-            df["日期"].min()
+            df["日期"]
+            .min()
             .strftime("%Y-%m-%d")
         )
 
         last_date = (
-            df["日期"].max()
+            df["日期"]
+            .max()
             .strftime("%Y-%m-%d")
         )
 
-        log("")
         log(
-            f"✅ {code} 更新成功"
+            f"   数据源：{source}"
         )
 
         log(
-            f"数据量：{len(df)}"
+            f"   数据量：{len(df)}"
         )
 
         log(
-            f"开始日期：{first_date}"
+            f"   日期：{first_date}"
+            f" → {last_date}"
         )
 
         log(
-            f"最新日期：{last_date}"
+            f"   文件：{filename}"
         )
 
         log(
-            f"文件：{filename}"
+            "   ✅ 更新成功"
         )
 
         return True
 
     except Exception as e:
 
-        log("")
         log(
-            f"❌ {code} 更新失败"
+            f"   ❌ 更新失败：{e}"
         )
-
-        log(
-            f"原因：{str(e)}"
-        )
-
-        return False
-
-
-# =========================================================
-# 检查已有数据
-# =========================================================
-
-def check_existing_data(
-    code,
-    asset_type
-):
-
-    filename = os.path.join(
-        DATA_DIR,
-        f"{asset_type}_{code}.csv"
-    )
-
-    if not os.path.exists(
-        filename
-    ):
-
-        return False
-
-    try:
-
-        df = pd.read_csv(
-            filename
-        )
-
-        if df.empty:
-
-            return False
-
-        required_columns = [
-            "日期",
-            "开盘",
-            "收盘"
-        ]
-
-        for col in required_columns:
-
-            if col not in df.columns:
-
-                return False
-
-        return True
-
-    except Exception:
 
         return False
 
@@ -588,61 +572,36 @@ def check_existing_data(
 
 def main():
 
-    start_time = time.time()
-
     log("")
     log("=" * 60)
-    log("🚀 A股量化助手 V3 数据更新程序")
+    log("🚀 A股量化助手 V3.0 数据中心")
     log("=" * 60)
-    log("")
-
-    # =====================================================
-    # 读取股票
-    # =====================================================
 
     stocks = load_list(
         STOCK_LIST
     )
 
-    # =====================================================
-    # 读取ETF
-    # =====================================================
-
     etfs = load_list(
         ETF_LIST
     )
 
-    total_count = (
+    total = (
         len(stocks)
         +
         len(etfs)
     )
 
-    if total_count == 0:
+    if total == 0:
 
-        log("")
         log(
-            "❌ 没有找到任何股票或ETF"
+            "❌ 股票和ETF列表都是空的"
         )
 
         sys.exit(1)
 
-    log("")
-    log("=" * 60)
-    log(
-        f"准备更新 {total_count} 个品种"
-    )
-    log(
-        f"股票：{len(stocks)}"
-    )
-    log(
-        f"ETF：{len(etfs)}"
-    )
-    log("=" * 60)
+    success = []
 
-    success_list = []
-
-    failed_list = []
+    failed = []
 
     # =====================================================
     # 股票
@@ -650,30 +609,27 @@ def main():
 
     for _, row in stocks.iterrows():
 
-        code = row["code"]
-
-        name = row["name"]
-
-        success = update_one(
-            code,
-            name,
+        ok = update_one(
+            row["code"],
+            row["name"],
             "stock"
         )
 
-        if success:
+        if ok:
 
-            success_list.append(
-                f"股票 {code} {name}"
+            success.append(
+                f"股票 {row['code']} "
+                f"{row['name']}"
             )
 
         else:
 
-            failed_list.append(
-                f"股票 {code} {name}"
+            failed.append(
+                f"股票 {row['code']} "
+                f"{row['name']}"
             )
 
-        # 防止请求过快
-        time.sleep(1)
+        time.sleep(0.5)
 
     # =====================================================
     # ETF
@@ -681,153 +637,90 @@ def main():
 
     for _, row in etfs.iterrows():
 
-        code = row["code"]
-
-        name = row["name"]
-
-        success = update_one(
-            code,
-            name,
+        ok = update_one(
+            row["code"],
+            row["name"],
             "etf"
         )
 
-        if success:
+        if ok:
 
-            success_list.append(
-                f"ETF {code} {name}"
+            success.append(
+                f"ETF {row['code']} "
+                f"{row['name']}"
             )
 
         else:
 
-            failed_list.append(
-                f"ETF {code} {name}"
+            failed.append(
+                f"ETF {row['code']} "
+                f"{row['name']}"
             )
 
-        # 防止请求过快
-        time.sleep(1)
+        time.sleep(0.5)
 
     # =====================================================
-    # 最终报告
+    # 总结
     # =====================================================
-
-    elapsed = (
-        time.time()
-        -
-        start_time
-    )
 
     log("")
     log("")
     log("=" * 60)
-    log("📊 数据更新结果")
+    log("📊 更新结果")
     log("=" * 60)
 
-    log("")
     log(
-        f"总数量：{total_count}"
+        f"总数：{total}"
     )
 
     log(
-        f"成功：{len(success_list)}"
+        f"成功：{len(success)}"
     )
 
     log(
-        f"失败：{len(failed_list)}"
+        f"失败：{len(failed)}"
     )
 
-    log(
-        f"耗时：{elapsed:.1f} 秒"
-    )
-
-    # =====================================================
-    # 成功列表
-    # =====================================================
-
-    if success_list:
+    if success:
 
         log("")
-        log("✅ 成功列表")
+        log("✅ 成功：")
 
-        for item in success_list:
+        for item in success:
 
             log(
                 f"   {item}"
             )
 
-    # =====================================================
-    # 失败列表
-    # =====================================================
-
-    if failed_list:
+    if failed:
 
         log("")
-        log("❌ 失败列表")
+        log("❌ 失败：")
 
-        for item in failed_list:
+        for item in failed:
 
             log(
                 f"   {item}"
             )
 
-    # =====================================================
-    # 最终状态
-    # =====================================================
+        log("")
+        log(
+            "⚠️ 有品种更新失败。"
+        )
+
+        # 让 Actions 明确失败
+        # 但已经告诉用户具体是哪一只
+
+        sys.exit(1)
 
     log("")
-    log("=" * 60)
-
-    if failed_list:
-
-        log(
-            "⚠️ 数据更新完成，但存在失败品种。"
-        )
-
-        log(
-            "请根据上面的失败原因检查。"
-        )
-
-        # 注意：
-        # 不直接 sys.exit(1)
-        #
-        # 防止一个ETF失败导致整个Actions
-        # 完全停止。
-
-    else:
-
-        log(
-            "🎉 所有股票和ETF更新成功！"
-        )
+    log(
+        "🎉 所有股票和ETF更新成功！"
+    )
 
     log("=" * 60)
 
-
-# =========================================================
-# 程序入口
-# =========================================================
 
 if __name__ == "__main__":
 
-    try:
-
-        main()
-
-    except Exception as e:
-
-        log("")
-        log("=" * 60)
-        log("❌ 程序发生严重错误")
-        log("=" * 60)
-
-        log(
-            str(e)
-        )
-
-        log("")
-        log(
-            "详细错误："
-        )
-
-        traceback.print_exc()
-
-        # 严重错误才让Actions失败
-        sys.exit(1)
+    main()
